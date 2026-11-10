@@ -414,7 +414,9 @@ test("a new user turn is not sent during cooldown; can send after 45 seconds", a
   await chat.advance(250);
   assert.equal(chat.clicks(), 1); // second turn must respect cooldown
   await chat.advance(45000);
-  chat.poll();
+  chat.poll(); // Cooldown expired; this pass establishes stability baseline.
+  await chat.advance(1600);
+  chat.poll(); // Now the follow-up timer may be armed.
   await chat.advance(5000);
   await chat.advance(250);
   assert.equal(chat.clicks(), 2);
@@ -491,4 +493,38 @@ test("different answer after previous claim increments assistant ordinal", async
   await chat.advance(5000);
   await chat.advance(250);
   assert.equal(chat.clicks(), 2);
+});
+
+
+test("persisted cooldown suppresses all completion checks, scheduling and edits", async () => {
+  const chat = createHarness({ lockedUntil: 60000 });
+  await chat.baseline();
+  chat.poll();
+  await chat.advance(15000);
+  chat.poll();
+  await chat.advance(44000);
+  chat.poll();
+  assert.equal(chat.clicks(), 0);
+  assert.equal(chat.sentRuntimeMessages.filter(x => x === "CLAIM_SEND").length, 0);
+  await chat.advance(1000); // Global cooldown expires.
+  chat.poll(); // Readies the completion stability check.
+  await chat.advance(1600);
+  chat.poll();
+  await chat.advance(5000);
+  await chat.advance(250);
+  assert.equal(chat.clicks(), 1);
+});
+
+test("persistent cooldown prevents completion timers even after local content reinit", async () => {
+  const first = createHarness({ lockedUntil: 90000 });
+  const reloaded = createHarness({ lockedUntil: 90000 });
+  await first.baseline();
+  await reloaded.baseline();
+  for (const instance of [first, reloaded]) {
+    instance.poll();
+    await instance.advance(80000);
+    instance.poll();
+    assert.equal(instance.clicks(), 0);
+    assert.equal(instance.sentRuntimeMessages.filter(x => x === "CLAIM_SEND").length, 0);
+  }
 });

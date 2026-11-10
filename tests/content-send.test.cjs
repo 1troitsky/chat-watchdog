@@ -61,9 +61,11 @@ test("a short first assistant reply after enabling an empty chat is submitted", 
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "core.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8"), context);
-  await Promise.resolve();
-  await Promise.resolve(); // GET_CONFIG has completed; empty chat is baseline
+  for (let i = 0; i < 24; i++) await Promise.resolve();
+  // GET_CONFIG and persisted GET_SEND_STATE have both completed before
+  // simulating the arrival of a new assistant response.
 
+  poll(); // Initial empty conversation establishes baseline.
   assistant = {
     innerText: "!!!ГОТОВО!!!",
     getClientRects: () => [{}],

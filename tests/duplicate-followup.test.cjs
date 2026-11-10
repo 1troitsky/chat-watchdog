@@ -77,7 +77,7 @@ function createHarness(options = {}) {
     createElement() {
       const close = { addEventListener() {}, focus() {} };
       return {
-        style: {}, remove() {}, attachShadow() {
+        style: {}, remove() {}, setAttribute() {}, attachShadow() {
           return {
             innerHTML: "",
             getElementById() { return { textContent: "" }; },

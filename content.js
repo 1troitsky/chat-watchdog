@@ -524,8 +524,15 @@
   }
 
   function cancelPending() {
-    if (pending) clearTimeout(pending.timer);
+    const old = pending;
     pending = null;
+    if (!old) return;
+    if (old.timer) clearTimeout(old.timer);
+    if (old.armId)
+      chrome.runtime.sendMessage({ type: "CANCEL_ARM", armId: old.armId })
+        .catch(() => {});
+    // An outstanding ARM_SEND acknowledgement is canceled by its handler
+    // if this pending object has already been detached.
   }
 
   function editorText(editor) {
@@ -557,8 +564,11 @@
     }
   }
 
-  async function sendIfReady(expectedKey) {
+  async function sendIfReady(expectedKey, scheduled) {
+    if (!scheduled || pending !== scheduled || !scheduled.armId) return;
     pending = null;
+    let claimSucceeded = false;
+    try {
     const expectedModeEpoch = modeEpoch;
     autoDecision("Таймер ожидания истёк — проверяем отправку", "attempt");
     if (sending || !config.enabled || config.mode !== "auto" ||
@@ -662,7 +672,8 @@
         let claim;
         try {
           claim = await chrome.runtime.sendMessage({
-            type: "CLAIM_SEND", token, assistantOrdinal: current.ordinal
+            type: "CLAIM_SEND", token, assistantOrdinal: current.ordinal,
+            armId: scheduled.armId
           });
         } catch (error) {
           recordEvent("blocked", "Отправка отменена: нет подтверждения защиты от дублей");
@@ -676,6 +687,7 @@
             "Повторная отправка заблокирована");
           return;
         }
+        claimSucceeded = true;
         globalLockedUntil = Math.max(globalLockedUntil,
           Number.isFinite(claim.lockedUntil) ? claim.lockedUntil :
           Date.now() + config.cooldownSeconds * 1000);
@@ -719,6 +731,12 @@
       console.warn("Chat Watchdog: send button unavailable; follow-up left in editor.");
     } finally {
       sending = false;
+    }
+    } finally {
+      if (!claimSucceeded && scheduled.armId)
+        chrome.runtime.sendMessage({
+          type: "CANCEL_ARM", armId: scheduled.armId
+        }).catch(() => {});
     }
   }
 
@@ -796,15 +814,44 @@
     if (config.completionSelector && !query(config.completionSelector).some(visible)) return;
     if (pending && pending.key === key) return;
     cancelPending();
-    pending = {
-      key,
-      dueAt: Date.now() + config.delaySeconds * 1000,
-      timer: setTimeout(() => { sendIfReady(key).catch(console.warn); },
-        config.delaySeconds * 1000)
+    const scheduled = {
+      key, armId: null, dueAt: null, timer: null
     };
-    recordEvent("detected", config.marker ? "Найден маркер: " + config.marker +
-      " — отправка через " + config.delaySeconds + " с" :
-      "Ответ завершён — отправка через " + config.delaySeconds + " с");
+    pending = scheduled;
+    const token = sendToken(result.node, text, result.count);
+    chrome.runtime.sendMessage({
+      type: "ARM_SEND", token, assistantOrdinal: result.ordinal
+    }).then(arm => {
+      if (pending !== scheduled) {
+        if (arm?.ok && arm.armId)
+          chrome.runtime.sendMessage({
+            type: "CANCEL_ARM", armId: arm.armId
+          }).catch(() => {});
+        return;
+      }
+      if (!arm?.ok || !arm.armId || !Number.isFinite(arm.dueAt)) {
+        pending = null;
+        handled.add(key);
+        autoDecision("Ожидание заблокировано фоновым процессом: " +
+          (arm?.reason || "нет подтверждения"));
+        return;
+      }
+      scheduled.armId = arm.armId;
+      scheduled.dueAt = arm.dueAt;
+      scheduled.timer = setTimeout(() => {
+        sendIfReady(key, scheduled).catch(console.warn);
+      }, Math.max(0, arm.dueAt - Date.now()));
+      recordEvent("detected", config.marker ? "Найден маркер: " + config.marker +
+        " — отправка через " + Math.ceil(Math.max(0, arm.dueAt - Date.now()) / 1000) + " с" :
+        "Ответ завершён — отправка через " +
+        Math.ceil(Math.max(0, arm.dueAt - Date.now()) / 1000) + " с");
+    }).catch(() => {
+      if (pending === scheduled) {
+        pending = null;
+        handled.add(key);
+        autoDecision("Ожидание заблокировано: фоновый процесс недоступен");
+      }
+    });
   }
 
   function scheduleCheck() {

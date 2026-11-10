@@ -1,3 +1,9 @@
+## v0.3.0 Strict Send Protocol
+
+The background service worker now **arms** a completion token and sets an absolute `dueAt` on the worker clock. Content scripts cannot claim a send without the exact background-issued `armId`, the matching token/ordinal/tab, and a reached deadline. A canceled pending timer revokes its arm; any observed user turn revokes outstanding arms in that conversation. Old content scripts' bare `CLAIM_SEND` requests fail closed. One arm per conversation is allowed and service-worker suspension does not reset it. The existing atomic 45-second cooldown and one-reply deduplication still apply.
+
+This is a safeguard for Watchdog's own send path; it cannot prevent other browser extensions or external tools from submitting to ChatGPT.
+
 # Chat Watchdog
 
 A small, local Chrome/Chromium Manifest V3 extension for continuing AI chat tasks automatically.

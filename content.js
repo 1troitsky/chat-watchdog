@@ -13,6 +13,7 @@
   let debounce = null;
   let handled = new Set();
   const errorTracker = Core.createErrorTracker();
+  const acknowledgedAssistantAlerts = new Set();
   const sendGuard = Core.createSendGuard();
   let dialogRoot = null;
   let dialogError = null;
@@ -256,12 +257,22 @@
 
   // Display errors from real site alerts OR a standalone alert phrase in the
   // assistant's latest response. Do not inspect chat-history user messages.
+  function isWatchdogUi(node) {
+    const element = node && node.nodeType === 3 ? node.parentNode : node;
+    if (!element) return false;
+    if (element.id === "chat-watchdog-alert-host" ||
+        (element.getAttribute &&
+         element.getAttribute("data-chat-watchdog-toast") !== null)) return true;
+    return typeof element.closest === "function" &&
+      !!element.closest("#chat-watchdog-alert-host, [data-chat-watchdog-toast]");
+  }
+
   function checkError() {
     const selector = config.errorSelector ||
       '[role="alert"], [role="status"], [data-sonner-toast], [data-testid*="error"], .toast, .error-banner';
     const matches = [];
     for (const node of query(selector)) {
-      if (!visible(node)) continue;
+      if (!visible(node) || isWatchdogUi(node)) continue;
       const rawText = textOf(node).slice(0, 1000);
       const matched = Core.findError(rawText, config.errorWords);
       if (!matched) continue;
@@ -270,13 +281,27 @@
       matches.push({ node: target, signature, phrase: matched });
     }
     const lastReply = latestAssistant(currentSelectors().assistant).node;
-    if (lastReply && visible(lastReply)) {
+    if (lastReply && visible(lastReply) && !isWatchdogUi(lastReply)) {
       const phrase = Core.findErrorLine(textOf(lastReply), config.errorWords);
-      if (phrase) matches.push({
-        node: lastReply,
-        signature: "assistant:" + phrase + ":" + textOf(lastReply).slice(0, 500),
-        phrase
-      });
+      if (phrase) {
+        // This is a logical alert attached to a user turn, not a DOM node.
+        // React can replace the assistant element repeatedly without a new
+        // reply; that must never restart the alarm after dismissal.
+        const turn = latestUserTurn().logicalTurn ||
+          Core.userTurnFingerprint(0, textOf(lastReply));
+        const key = route + "\u0000" + turn + "\u0000" + phrase;
+        if (!acknowledgedAssistantAlerts.has(key)) {
+          acknowledgedAssistantAlerts.add(key);
+          if (acknowledgedAssistantAlerts.size > 200) {
+            acknowledgedAssistantAlerts.delete(acknowledgedAssistantAlerts.values().next().value);
+          }
+          matches.push({
+            node: lastReply,
+            signature: "assistant:" + phrase + ":" + turn,
+            phrase
+          });
+        }
+      }
     }
     const fresh = errorTracker.observe(matches);
     if (fresh) {
@@ -437,6 +462,7 @@
     if (route !== location.href) {
       closeDialog();
       errorTracker.reset();
+      acknowledgedAssistantAlerts.clear();
       route = location.href;
       seenInitial = false;
       lastKey = "";
@@ -594,7 +620,7 @@
   // between two polling cycles. Text replacement can also happen in the
   // same persistent [role="alert"] element.
   function errorTextIn(node) {
-    if (!node) return false;
+    if (!node || isWatchdogUi(node)) return false;
     const content = node.nodeType === 3 ? node.nodeValue : node.textContent;
     return !!Core.findError(String(content || "").slice(0, 1000), config.errorWords);
   }
@@ -602,23 +628,23 @@
   function inspectMutations(records) {
     if (config.enabled) {
       for (const record of records) {
+        if (isWatchdogUi(record.target)) continue;
         if (record.type === "childList") {
-          const textRemoved = Array.from(record.removedNodes).some(errorTextIn);
-          const textAdded = Array.from(record.addedNodes).some(errorTextIn);
-          // A disappearing alert must stop being considered the old event.
-          for (const removed of record.removedNodes) {
-            errorTracker.forgetSubtree(removed);
-          }
-          if (textRemoved || textAdded) {
-            errorTracker.markUpdated(record.target);
-          }
+          const added = Array.from(record.addedNodes).filter(node => !isWatchdogUi(node));
+          const removed = Array.from(record.removedNodes).filter(node => !isWatchdogUi(node));
+          // Ignore our own dialog/toasts in BOTH directions. Their text often
+          // contains the error phrase, so watching them created a feedback loop.
+          const textRemoved = removed.some(errorTextIn);
+          const textAdded = added.some(errorTextIn);
+          for (const node of removed) errorTracker.forgetSubtree(node);
+          // The tracker only re-arms an error if a mutation happens INSIDE
+          // the actual error node, never merely somewhere inside the page.
+          if (textRemoved || textAdded) errorTracker.markUpdated(record.target);
         } else if (record.type === "characterData") {
           if (errorTextIn(record.target)) {
             errorTracker.markUpdated(record.target.parentNode);
           }
         } else if (record.type === "attributes") {
-          // A visibility change can represent a new alert in a reused node.
-          // Avoid treating ordinary class/animation changes as new errors.
           if (record.attributeName === "hidden" ||
               record.attributeName === "aria-hidden" ||
               (record.attributeName === "style" &&

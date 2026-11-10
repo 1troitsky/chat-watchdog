@@ -85,14 +85,17 @@ test("a removed and re-inserted identical error triggers again even between poll
   assert.equal(tracker.observe([error]), null);
 });
 
-test("re-rendering an identical error in the same wrapper triggers again", () => {
+test("mutations inside a tracked error re-arm; unrelated ancestor changes do not", () => {
   const tracker = Core.createErrorTracker();
   const wrapper = { contains: (child) => child === message };
-  const message = { contains: () => false };
+  const message = { contains: (child) => child === leaf };
+  const leaf = {};
   const error = { node: message, signature: "Ошибка соединения" };
   assert.equal(tracker.observe([error]), error);
-  assert.equal(tracker.observe([error]), null); // Closing does not rearm
-  tracker.markUpdated(wrapper); // the site replaced the text in its wrapper
+  assert.equal(tracker.observe([error]), null);
+  tracker.markUpdated(wrapper); // Rendering a toast into <body> does not re-arm.
+  assert.equal(tracker.observe([error]), null);
+  tracker.markUpdated(leaf); // Content of the tracked error actually changed.
   assert.equal(tracker.observe([error]), error);
   assert.equal(tracker.observe([error]), null);
 });

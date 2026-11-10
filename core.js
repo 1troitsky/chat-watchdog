@@ -205,7 +205,7 @@
       // event even if the resulting text is identical.
       markUpdated(container) {
         for (const node of visibleErrors.keys()) {
-          if (contains(container, node) || contains(node, container)) {
+          if (contains(node, container)) {
             revisions.set(node, (revisions.get(node) || 0) + 1);
           }
         }

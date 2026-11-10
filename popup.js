@@ -100,6 +100,27 @@
     }
   });
 
+  $("diagnose").addEventListener("click", async () => {
+    const output = $("diagnostic");
+    output.textContent = "Проверка…";
+    try {
+      const result = await chrome.tabs.sendMessage(tab.id, { type: "WATCHDOG_DIAGNOSE" });
+      if (!result) throw new Error("Монитор не отвечает. Включи ON и обнови страницу.");
+      output.textContent = [
+        "Монитор: " + (result.enabled ? "ON" : "OFF"),
+        "Сообщений ИИ: " + result.assistantCount,
+        "Маркер в последнем ответе: " + (result.markerDetected ? "ДА" : "НЕТ"),
+        "Редактор: " + (result.editorFound ? "найден" : "НЕ НАЙДЕН"),
+        "Поле пустое: " + (result.editorEmpty ? "да" : "нет"),
+        "Кнопка отправки активна: " + (result.sendButtonFound ? "да" : "нет"),
+        "Кнопка остановки видна: " + (result.stopButtonVisible ? "да" : "нет"),
+        "Ожидание отправки: " + (result.pending ? "да" : "нет")
+      ].join("\n");
+    } catch (error) {
+      output.textContent = "Не удалось проверить: " + (error.message || String(error));
+    }
+  });
+
   $("audioFile").addEventListener("change", async () => {
     const file = $("audioFile").files[0];
     if (!file) return;

@@ -287,8 +287,32 @@
     debounce = setTimeout(check, 300);
   }
 
-  chrome.runtime.onMessage.addListener((message) => {
-    if (!message || message.type !== "WATCHDOG_CONFIG") return;
+  // Local-only diagnostics: return counts and booleans, never message content.
+  function diagnosticSnapshot() {
+    const selectors = currentSelectors();
+    const assistantNodes = query(selectors.assistant).filter(visible);
+    const lastAssistant = assistantNodes[assistantNodes.length - 1];
+    const editor = findEditor(selectors.editor);
+    return {
+      enabled: config.enabled,
+      assistantCount: assistantNodes.length,
+      markerDetected: !!lastAssistant &&
+        Core.hasMarker(textOf(lastAssistant), config.marker, config.markerRegex),
+      editorFound: !!editor,
+      editorEmpty: !!editor && !editorText(editor),
+      sendButtonFound: !!findSendButton(selectors.send),
+      stopButtonVisible: hasStopButton(selectors.stop),
+      pending: !!pending,
+      seenInitial
+    };
+  }
+
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message && message.type === "WATCHDOG_DIAGNOSE") {
+      sendResponse(diagnosticSnapshot());
+      return false;
+    }
+    if (!message || message.type !== "WATCHDOG_CONFIG") return false;
     const wasEnabled = config.enabled;
     config = Core.normalize(message.config);
     if (!config.enabled) {

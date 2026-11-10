@@ -115,6 +115,14 @@ document.querySelectorAll('button[data-testid="send-button"]')
 
 **What each field controls:** Assistant message identifies the text to examine for the completion marker; Message editor is where the follow-up is entered; Send button submits it; Stop button indicates generation is ongoing; Completion element is an optional extra required signal (leave it blank by default); Error element limits where error phrases are searched (e.g. visible alerts and status messages). Error phrases are configured separately, one per line.
 
+## Troubleshooting a marker that does not send
+
+Open **Chat Watchdog → CSS-селекторы (необязательно) → Проверить элементы чата** while viewing the conversation. The diagnostic checks only the current tab and reports element counts and booleans; it does not copy or upload conversation text.
+
+Expected in an idle chat after a new assistant message ending with the marker: **Сообщений ИИ** greater than zero, **Маркер** = ДА, **Редактор** = найден, **Поле пустое** = да, **Кнопка отправки активна** = да and **Кнопка остановки видна** = нет. The waiting flag appears while the configured delay is counting down. If the assistant count is zero, inspect a *live assistant reply* (not the composer) and configure its CSS selector.
+
+Note that the HTML source of a ChatGPT page can contain only the initial app shell. Line 155 in the previously supplied saved HTML was a CSS color variable, not a JavaScript exception. For a JavaScript error, copy its complete message and source file from Chrome DevTools → Console.
+
 ## Check
 
 Run: node --test

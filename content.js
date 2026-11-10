@@ -27,6 +27,8 @@
   let sending = false;
   let modeEpoch = 0;
   let lastUserTurnAtSend = null;
+  let lastAutoDecision = "Проверка ещё не проводилась";
+  let lastAutoDecisionAt = null;
   const eventLog = [];
   const lastEventSignature = new Map();
 
@@ -381,6 +383,12 @@
     setTimeout(() => toast.remove(), 4000);
   }
 
+  function autoDecision(message, eventType = "blocked") {
+    lastAutoDecision = message;
+    lastAutoDecisionAt = new Date(Date.now()).toLocaleTimeString("ru-RU");
+    recordEvent(eventType, message);
+  }
+
   function cooldownRemainingMs() {
     const localUntil = lastClickAt ? lastClickAt + config.cooldownSeconds * 1000 : 0;
     return Math.max(0, Math.max(localUntil, globalLockedUntil) - Date.now());
@@ -444,22 +452,48 @@
   async function sendIfReady(expectedKey) {
     pending = null;
     const expectedModeEpoch = modeEpoch;
+    autoDecision("Таймер ожидания истёк — проверяем отправку", "attempt");
     if (sending || !config.enabled || config.mode !== "auto" ||
         !cooldownHydrated || cooldownRemainingMs() ||
-        location.href !== route) return;
+        location.href !== route) {
+      autoDecision("Отправка отменена: режим, блокировка или смена чата");
+      return;
+    }
     const selectors = currentSelectors();
     const result = latestAssistant(selectors.assistant);
-    if (!result.node) return;
+    if (!result.node) {
+      autoDecision("Отправка отменена: нет нового ответа ИИ после пользователя");
+      return;
+    }
     const text = textOf(result.node);
     const key = messageKey(result.node, result.count, text);
     const assistantToken = sendToken(result.node, text, result.count);
-    if (key !== expectedKey || result.ordinal <= lastClaimedAssistantOrdinal ||
+    if (key !== expectedKey) {
+      autoDecision("Отправка отменена: ответ ИИ изменился за время ожидания");
+      return;
+    }
+    if (result.ordinal <= lastClaimedAssistantOrdinal ||
         submittedAssistantTokens.has(assistantToken) ||
-        !Core.completionMatches(text, config.marker, config.markerRegex) ||
-        hasStopButton(selectors.stop) ||
-        sendGuard.alreadySent(text, latestUserTurn().logicalTurn)) return;
-    if (config.completionSelector && !query(config.completionSelector).some(visible)) return;
-    if (checkError()) return;
+        sendGuard.alreadySent(text, latestUserTurn().logicalTurn)) {
+      autoDecision("Отправка отменена: ответ уже обработан");
+      return;
+    }
+    if (!Core.completionMatches(text, config.marker, config.markerRegex)) {
+      autoDecision("Отправка отменена: маркер исчез из ответа");
+      return;
+    }
+    if (hasStopButton(selectors.stop)) {
+      autoDecision("Отправка отменена: генерация ещё идёт (кнопка Stop)");
+      return;
+    }
+    if (config.completionSelector && !query(config.completionSelector).some(visible)) {
+      autoDecision("Отправка отменена: нет элемента завершения");
+      return;
+    }
+    if (checkError()) {
+      autoDecision("Отправка отменена: обнаружена ошибка");
+      return;
+    }
 
     const remaining = cooldownRemainingMs();
     if (remaining) {
@@ -473,15 +507,24 @@
       return; // Never overwrite a human draft.
     }
     // A stable finished reply must be the newest visible turn.
-    if (!followsUser(result.node, latestUserTurn().node)) return;
+    if (!followsUser(result.node, latestUserTurn().node)) {
+      autoDecision("Отправка отменена: пользователь отправил новое сообщение");
+      return;
+    }
     sending = true;
     try {
       fillEditor(editor, config.reply);
       for (let attempt = 0; attempt < 10; attempt++) {
         await new Promise(resolve => setTimeout(resolve, 200));
         if (!config.enabled || config.mode !== "auto" ||
-            modeEpoch !== expectedModeEpoch || location.href !== route) return;
-        if (editorText(editor) !== config.reply) return;
+            modeEpoch !== expectedModeEpoch || location.href !== route) {
+          autoDecision("Отправка отменена: изменился режим или чат");
+          return;
+        }
+        if (editorText(editor) !== config.reply) {
+          autoDecision("Отправка отменена: поле ввода изменено");
+          return;
+        }
         // CRITICAL: recheck stop state on EVERY retry and immediately
         // before click. A Stop button must NEVER be mistaken for Send.
         if (hasStopButton(selectors.stop)) {
@@ -492,7 +535,10 @@
         const current = latestAssistant(selectors.assistant);
         if (!current.node || messageKey(current.node, current.count, textOf(current.node)) !== expectedKey ||
             !followsUser(current.node, latestUserTurn().node) ||
-            !Core.completionMatches(textOf(current.node), config.marker, config.markerRegex)) return;
+            !Core.completionMatches(textOf(current.node), config.marker, config.markerRegex)) {
+          autoDecision("Отправка отменена: ответ изменился после заполнения поля");
+          return;
+        }
         const button = findSendButton(selectors.send);
         if (!button) continue;
         if (!config.enabled || config.mode !== "auto" || modeEpoch !== expectedModeEpoch ||
@@ -551,6 +597,7 @@
         lastClickAt = Date.now();
         sendClicks++;
         finalButton.click();
+        autoDecision("Отправлено одно сообщение автопродолжения", "sent");
         recordEvent("sent", "Отправлено: " + config.reply);
         return;
       }
@@ -600,6 +647,7 @@
     const text = textOf(result.node);
     const key = messageKey(result.node, result.count, text);
     if (key !== lastKey) {
+      if (pending) autoDecision("Таймер отменён: ответ изменился во время ожидания");
       lastKey = key;
       stableSince = Date.now();
       cancelPending();
@@ -629,6 +677,7 @@
     cancelPending();
     pending = {
       key,
+      dueAt: Date.now() + config.delaySeconds * 1000,
       timer: setTimeout(() => { sendIfReady(key).catch(console.warn); },
         config.delaySeconds * 1000)
     };
@@ -680,7 +729,9 @@
       sendButtonFound: !!findSendButton(selectors.send),
       stopButtonVisible: hasStopButton(selectors.stop),
       pending: !!pending,
-      seenInitial
+      seenInitial,
+      lastAutoDecision, lastAutoDecisionAt,
+      scheduledSendAt: pending ? pending.dueAt : null
     };
   }
 

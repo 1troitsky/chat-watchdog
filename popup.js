@@ -159,7 +159,11 @@
         "Поле пустое: " + (result.editorEmpty ? "да" : "нет"),
         "Кнопка отправки активна: " + (result.sendButtonFound ? "да" : "нет"),
         "Кнопка остановки видна: " + (result.stopButtonVisible ? "да" : "нет"),
-        "Ожидание отправки: " + (result.pending ? "да" : "нет")
+        "Ожидание отправки: " + (result.pending ? "да" : "нет"),
+        "Отправка назначена: " + (result.scheduledSendAt ?
+          new Date(result.scheduledSendAt).toLocaleTimeString("ru-RU") : "нет"),
+        "Последняя попытка: " + (result.lastAutoDecisionAt || "нет"),
+        "Причина/результат: " + result.lastAutoDecision
       ].join("\n");
     } catch (error) {
       output.textContent = "Не удалось проверить: " + (error.message || String(error));

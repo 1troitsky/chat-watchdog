@@ -548,8 +548,9 @@ test("30-second post-marker delay never sends at 5 or 29 seconds", async () => {
   await chat.advance(5000);
   chat.poll();
   assert.equal(chat.clicks(), 0);
-  await chat.advance(24000);
+  await chat.advance(24000); // 29 seconds since scheduling.
   assert.equal(chat.clicks(), 0);
+  await chat.advance(1000); // 30-second delay expires.
   await chat.advance(250);
   assert.equal(chat.clicks(), 1);
 });

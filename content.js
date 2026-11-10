@@ -469,7 +469,9 @@
       message
     });
     if (eventLog.length > 40) eventLog.shift();
-    if (config.toastEnabled) showToast(message, type);
+    // Passive provenance events belong in diagnostics, not as a toast for
+    // every normal user message.
+    if (config.toastEnabled && type !== "user-turn") showToast(message, type);
   }
 
   function showToast(message, type) {

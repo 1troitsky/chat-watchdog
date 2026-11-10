@@ -168,7 +168,30 @@
     };
   }
 
-  const api = { DEFAULTS, normalize, compileMarker, hasMarker, findError, selectorsFor, createErrorTracker };
+  // Prevent a completed marker from being submitted twice when React/SPA
+  // recreates the same assistant message or changes its DOM wrapper.
+  // Re-arm identical assistant text only after a NEW user turn followed by
+  // a NEW assistant reply; never treat rerendering as a new answer.
+  function createSendGuard() {
+    let sent = null;
+    return {
+      alreadySent(text, latestUser, latestAssistant) {
+        if (!sent || sent.text !== text) return false;
+        if (!latestUser || latestUser === sent.user) return true;
+        if (typeof latestUser.compareDocumentPosition !== "function") return true;
+        // A new assistant reply must come after the new user message.
+        return !(latestUser.compareDocumentPosition(latestAssistant) & 4);
+      },
+      record(text, latestUser) {
+        sent = { text, user: latestUser || null };
+      },
+      status(text, latestUser, latestAssistant) {
+        return this.alreadySent(text, latestUser, latestAssistant);
+      }
+    };
+  }
+
+  const api = { DEFAULTS, normalize, compileMarker, hasMarker, findError, selectorsFor, createErrorTracker, createSendGuard };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.ChatWatchdogCore = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

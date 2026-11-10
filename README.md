@@ -26,6 +26,7 @@ For any local MP3 file, use the **file picker**. A file:// URL alone is not perm
 
 - The extension is **OFF by default**. Enabling skips an already-completed assistant response to avoid replaying old tasks; a new conversation with no responses is armed immediately, including for a very short first response.
 - It never overwrites a nonempty input draft.
+- After sending a follow-up, it remembers the acknowledged reply text and will not submit that same reply again due to SPA re-rendering or DOM node replacement. Identical replies to a later user turn can still trigger independently when the DOM confirms they follow that turn.
 - It uses UI automation, not the AI provider's API, and does not guarantee that a response is correct or that a task has truly completed.
 - Completion is detected by plain text or an end-anchored Regex at the **end of the last assistant message**, stable text, an absent stop button, and optionally a user-provided completion element.
 - Errors are detected in toast/alert/status elements, not every mention of error words inside chat history.
@@ -118,6 +119,8 @@ document.querySelectorAll('button[data-testid="send-button"]')
 ## Troubleshooting a marker that does not send
 
 Open **Chat Watchdog → CSS-селекторы (необязательно) → Проверить элементы чата** while viewing the conversation. The diagnostic checks only the current tab and reports element counts and booleans; it does not copy or upload conversation text.
+
+If a message was already sent for the current reply, the diagnostic reports this as a previously submitted marker; it is not treated as a new task.
 
 Expected in an idle chat after a new assistant message ending with the marker: **Сообщений ИИ** greater than zero, **Маркер** = ДА, **Редактор** = найден, **Поле пустое** = да, **Кнопка отправки активна** = да and **Кнопка остановки видна** = нет. The waiting flag appears while the configured delay is counting down. If the assistant count is zero, check the additional counters for legacy roles, search-unit keys, turn keys, and user bubbles. You may need to inspect a *live assistant reply* (not the composer) and configure its CSS selector. If a stale custom selector was entered, clear it to use automatic detection. The generic marker fallback only runs when the DOM confirms the latest user message and the candidate marker is after it; it deliberately refuses to send when message ownership cannot be determined.
 

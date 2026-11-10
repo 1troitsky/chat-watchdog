@@ -13,6 +13,7 @@
   let debounce = null;
   let handled = new Set();
   const errorTracker = Core.createErrorTracker();
+  const sendGuard = Core.createSendGuard();
   let dialogRoot = null;
   let dialogError = null;
 
@@ -74,6 +75,13 @@
       // Bit 4 (DOCUMENT_POSITION_FOLLOWING): assistant text follows user.
       return !!(lastUser.compareDocumentPosition(node) & 4);
     });
+  }
+
+  function latestUserNode() {
+    const nodes = query(
+      '[data-user-message-bubble="true"], [data-message-author-role="user"], [data-content-search-unit-key$=":user"]'
+    ).filter(visible);
+    return nodes[nodes.length - 1] || null;
   }
 
   function assistantElements(selector) {
@@ -278,7 +286,8 @@
     const text = textOf(result.node);
     const key = messageKey(result.node, result.count, text);
     if (key !== expectedKey || !Core.hasMarker(text, config.marker, config.markerRegex) ||
-      hasStopButton(selectors.stop)) return;
+      hasStopButton(selectors.stop) ||
+      sendGuard.alreadySent(text, latestUserNode(), result.node)) return;
     if (config.completionSelector && !query(config.completionSelector).some(visible)) return;
     const editor = findEditor(selectors.editor);
     if (!editor || editorText(editor)) return; // Never overwrite a human's draft.
@@ -291,6 +300,10 @@
       if (editorText(editor) !== config.reply) return;
       const button = findSendButton(selectors.send);
       if (button) {
+        if (sendGuard.alreadySent(text, latestUserNode(), result.node)) return;
+        // Record before submitting, because the chat can immediately rerender
+        // or reset the composer and expose the same marker under a new node.
+        sendGuard.record(text, latestUserNode());
         handled.add(expectedKey);
         button.click();
         return;
@@ -335,7 +348,8 @@
       if (Core.hasMarker(text, config.marker, config.markerRegex)) handled.add(key);
       return;
     }
-    if (handled.has(key) || !Core.hasMarker(text, config.marker, config.markerRegex)) return;
+    if (handled.has(key) || !Core.hasMarker(text, config.marker, config.markerRegex) ||
+      sendGuard.alreadySent(text, latestUserNode(), result.node)) return;
     if (Date.now() - stableSince < 1500 || hasStopButton(selectors.stop)) return;
     if (config.completionSelector && !query(config.completionSelector).some(visible)) return;
     if (pending && pending.key === key) return;
@@ -370,6 +384,8 @@
       customAssistantSelector: !!config.assistantSelector,
       markerDetected: !!lastAssistant &&
         Core.hasMarker(textOf(lastAssistant), config.marker, config.markerRegex),
+      markerAlreadySent: !!lastAssistant &&
+        sendGuard.alreadySent(textOf(lastAssistant), latestUserNode(), lastAssistant),
       editorFound: !!editor,
       editorEmpty: !!editor && !editorText(editor),
       sendButtonFound: !!findSendButton(selectors.send),

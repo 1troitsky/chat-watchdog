@@ -115,6 +115,40 @@ test("ChatGPT selector supports 2026 search-unit and turn-key markup, keeping ol
   assert.match(selector, /data-user-message-bubble/);
   assert.match(Core.selectorsFor("claude.ai").assistant, /claude-message/);
 });
+test("the same completed reply cannot send twice after a DOM rerender", () => {
+  const guard = Core.createSendGuard();
+  const user = {};
+  const firstAssistant = {};
+  const rerenderedAssistant = {};
+  assert.equal(guard.alreadySent("!!!ГОТОВО!!!", user, firstAssistant), false);
+  guard.record("!!!ГОТОВО!!!", user);
+  assert.equal(guard.alreadySent("!!!ГОТОВО!!!", user, firstAssistant), true);
+  assert.equal(guard.alreadySent("!!!ГОТОВО!!!", user, rerenderedAssistant), true);
+  assert.equal(guard.alreadySent("Новый отчет !!!ГОТОВО!!!", user, rerenderedAssistant), false);
+});
+
+test("a new matching reply may send after a new user turn", () => {
+  const guard = Core.createSendGuard();
+  const oldUser = {};
+  const newUser = { compareDocumentPosition(other) {
+    return other === newAssistant ? 4 : 2;
+  } };
+  const oldAssistant = {};
+  const newAssistant = {};
+  guard.record("!!!ГОТОВО!!!", oldUser);
+  assert.equal(guard.alreadySent("!!!ГОТОВО!!!", newUser, oldAssistant), true);
+  assert.equal(guard.alreadySent("!!!ГОТОВО!!!", newUser, newAssistant), false);
+  guard.record("!!!ГОТОВО!!!", newUser);
+  assert.equal(guard.alreadySent("!!!ГОТОВО!!!", newUser, newAssistant), true);
+});
+
+test("without proof of a new user/reply, duplicate auto-send stays blocked", () => {
+  const guard = Core.createSendGuard();
+  guard.record("!!!ГОТОВО!!!", null);
+  assert.equal(guard.alreadySent("!!!ГОТОВО!!!", null, {}), true);
+  assert.equal(guard.alreadySent("!!!ГОТОВО!!!", {}, {}), true);
+});
+
 test("uses different selectors for different assistants", () => {
   assert.match(Core.selectorsFor("chatgpt.com").assistant, /data-message-author-role/);
   assert.match(Core.selectorsFor("chatgpt.com").editor, /pending-conversation-input/);

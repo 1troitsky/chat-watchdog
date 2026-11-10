@@ -4,6 +4,7 @@
   const DEFAULTS = Object.freeze({
     enabled: false,
     marker: "!!!ГОТОВО!!!",
+    markerRegex: false,
     reply: "Ок, продолжаем",
     delaySeconds: 5,
     errorWords: "Соединение прервано\nОшибка соединения\nВы достигли лимита\nВы достигни лимита\nConnection interrupted\nNetwork error\nRate limit reached",
@@ -26,6 +27,7 @@
       }
     }
     config.enabled = config.enabled === true;
+    config.markerRegex = config.markerRegex === true;
     config.delaySeconds = Math.max(1, Math.min(600, Number(config.delaySeconds) || 5));
     for (const key of Object.keys(DEFAULTS)) {
       if (typeof DEFAULTS[key] === "string") {
@@ -37,9 +39,34 @@
     return config;
   }
 
-  function hasMarker(text, marker) {
+  // Regex markers must match the very end of the assistant's answer.
+  function compileMarker(marker) {
+    let pattern = String(marker || "").trim();
+    let flags = "";
+    if (!pattern) throw new Error("Regex не может быть пустым");
+    if (pattern.startsWith("/")) {
+      const last = pattern.lastIndexOf("/");
+      if (last > 0 && /^[a-z]*$/i.test(pattern.slice(last + 1))) {
+        flags = pattern.slice(last + 1).replace(/[gy]/g, "");
+        pattern = pattern.slice(1, last);
+      }
+    }
+    if (!pattern || pattern.length > 1000) {
+      throw new Error("Regex должен содержать от 1 до 1000 символов");
+    }
+    // Lookahead checks real end of string even with the multiline flag.
+    return new RegExp("(?:" + pattern + ")\\s*(?![\\s\\S])", flags);
+  }
+
+  function hasMarker(text, marker, markerRegex = false) {
     if (!text || !marker) return false;
-    return String(text).trimEnd().endsWith(String(marker).trim());
+    const value = String(text).trimEnd();
+    if (!markerRegex) return value.endsWith(String(marker).trim());
+    try {
+      return compileMarker(marker).test(value.slice(-4000));
+    } catch {
+      return false;
+    }
   }
 
   function findError(text, phrases) {
@@ -105,7 +132,7 @@
     };
   }
 
-  const api = { DEFAULTS, normalize, hasMarker, findError, selectorsFor, createErrorTracker };
+  const api = { DEFAULTS, normalize, compileMarker, hasMarker, findError, selectorsFor, createErrorTracker };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.ChatWatchdogCore = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

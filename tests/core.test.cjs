@@ -16,6 +16,28 @@ test("only matches marker at the end", () => {
   assert.equal(Core.hasMarker("Answer\n!!!ГОТОВО!!!", "!!!ГОТОВО!!!"), true);
   assert.equal(Core.hasMarker("!!!ГОТОВО!!!\nStill working", "!!!ГОТОВО!!!"), false);
 });
+test("regex mode recognizes both development report endings and an explicit marker", () => {
+  const pattern = "(?:!!!ГОТОВО!!!|Следующий (?:этап|участок)[\\s\\S]{0,400})$";
+  const first = "CI 3/3 PASS\nСледующий этап P1 — версии MediaFile и интеграция видео/аудио с заданиями и разрешениями доступа.";
+  const second = "P1-20 закончен.\nСледующий участок — безопасное автоудаление файлов и заданий: сроки хранения, права, восстановление после сбоев и подтверждённая очистка из S3. Это отдельный механизм, чтобы изменение расписания никогда случайно не уничтожало данные.";
+  assert.equal(Core.hasMarker(first, pattern, true), true);
+  assert.equal(Core.hasMarker(second, pattern, true), true);
+  assert.equal(Core.hasMarker("Итоги\n!!!ГОТОВО!!!", pattern, true), true);
+  assert.equal(Core.hasMarker("Следующий этап будет позже. " + "Работа продолжается. ".repeat(60), pattern, true), false);
+});
+test("regex /pattern/i uses flags and anchors all alternatives", () => {
+  assert.equal(Core.hasMarker("ГОТОВО!", "/готово!/i", true), true);
+  assert.equal(Core.hasMarker("ГОТОВО! но дальше ещё текст", "/готово!/i", true), false);
+  assert.equal(Core.hasMarker("hello more text", "hello|text", true), true);
+  assert.equal(Core.hasMarker("hello more text still going", "hello|text", true), false);
+});
+test("invalid patterns are ignored and plain text remains compatible", () => {
+  assert.throws(() => Core.compileMarker("("), SyntaxError);
+  assert.equal(Core.hasMarker("(", "(", true), false);
+  assert.equal(Core.normalize().markerRegex, false);
+  assert.equal(Core.normalize({markerRegex:true}).markerRegex, true);
+  assert.equal(Core.hasMarker("Ответ !!!ГОТОВО!!!", "!!!ГОТОВО!!!"), true);
+});
 test("detects Russian and English error phrases", () => {
   const words = Core.DEFAULTS.errorWords;
   assert.equal(Core.findError("Ошибка соединения. Повторите", words), "Ошибка соединения");

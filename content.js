@@ -201,7 +201,7 @@
     const text = textOf(result.node);
     const messageId = result.node.closest("[data-message-id]")?.getAttribute("data-message-id") || "";
     const key = route + "|" + result.count + "|" + messageId + "|" + text;
-    if (key !== expectedKey || !Core.hasMarker(text, config.marker) ||
+    if (key !== expectedKey || !Core.hasMarker(text, config.marker, config.markerRegex) ||
       hasStopButton(selectors.stop)) return;
     if (config.completionSelector && !query(config.completionSelector).some(visible)) return;
     const editor = findEditor(selectors.editor);
@@ -245,10 +245,10 @@
     }
     if (!seenInitial) {
       seenInitial = true;
-      if (Core.hasMarker(text, config.marker)) handled.add(key);
+      if (Core.hasMarker(text, config.marker, config.markerRegex)) handled.add(key);
       return;
     }
-    if (handled.has(key) || !Core.hasMarker(text, config.marker)) return;
+    if (handled.has(key) || !Core.hasMarker(text, config.marker, config.markerRegex)) return;
     if (Date.now() - stableSince < 1500 || hasStopButton(selectors.stop)) return;
     if (config.completionSelector && !query(config.completionSelector).some(visible)) return;
     if (pending && pending.key === key) return;

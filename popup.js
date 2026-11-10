@@ -29,10 +29,21 @@
 
   const render = () => {
     $("enabled").checked = config.enabled;
+    $("markerRegex").checked = config.markerRegex;
     for (const field of fields) $(field).value = config[field];
     $("audioName").textContent = config.audioName || "Файл не выбран";
   };
   render();
+
+  function markerError() {
+    if (!config.markerRegex) return "";
+    try {
+      ChatWatchdogCore.compileMarker(config.marker);
+      return "";
+    } catch (error) {
+      return "Ошибка Regex: " + error.message;
+    }
+  }
 
   async function save() {
     config = ChatWatchdogCore.normalize(config);
@@ -42,7 +53,7 @@
     } catch {
       // The content script is not loaded when the switch is OFF.
     }
-    status("Сохранено для этой вкладки");
+    status(markerError() || "Сохранено для этой вкладки");
   }
 
   for (const field of fields) {
@@ -52,10 +63,16 @@
     });
   }
 
+  $("markerRegex").addEventListener("change", async () => {
+    config.markerRegex = $("markerRegex").checked;
+    await save();
+  });
+
   $("enabled").addEventListener("change", async () => {
     const checked = $("enabled").checked;
     $("enabled").disabled = true;
     try {
+      if (checked && markerError()) throw new Error(markerError());
       if (checked) {
         const granted = await chrome.permissions.request({ origins: [origin + "/*"] });
         if (!granted) throw new Error("Доступ к сайту не предоставлен");

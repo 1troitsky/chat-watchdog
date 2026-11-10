@@ -5,7 +5,7 @@ A small, local Chrome/Chromium Manifest V3 extension for continuing AI chat task
 ## Features
 
 - Independent ON/OFF and configuration for **each browser tab**, even for two tabs on the same AI website.
-- Waits for the assistant's response to **end with** the configured marker (default: !!!ГОТОВО!!!), and for the stop-generation control to disappear; then sends the configured follow-up after the chosen delay (5 seconds by default).
+- Waits for the assistant's response to **end with** the configured text marker (default: !!!ГОТОВО!!!) or match an optional **Regex** at the end of the answer, and for the stop-generation control to disappear; then sends the configured follow-up after the chosen delay (5 seconds by default).
 - Optional local MP3 alert and a **Chatbot Mistake** dialog when an error phrase appears in a visible error/status element. Closing the dialog (× or Escape) stops that tab's sound immediately. An unchanged visible error does not restart the alert.
 - Automatic detection for ChatGPT, Claude, Gemini, and a basic DeepSeek adapter. Other UIs can use optional CSS selectors. Web-chat interfaces change; these selectors need real-browser verification.
 - Per-site permission is requested **only when you switch ON** in that tab. No blanket permission at installation.
@@ -27,7 +27,7 @@ For any local MP3 file, use the **file picker**. A file:// URL alone is not perm
 - The extension is **OFF by default**. Enabling skips the already-completed assistant response to avoid replaying old tasks.
 - It never overwrites a nonempty input draft.
 - It uses UI automation, not the AI provider's API, and does not guarantee that a response is correct or that a task has truly completed.
-- Completion is detected by the marker at the **end of the last assistant message**, stable text, an absent stop button, and optionally a user-provided completion element.
+- Completion is detected by plain text or an end-anchored Regex at the **end of the last assistant message**, stable text, an absent stop button, and optionally a user-provided completion element.
 - Errors are detected in toast/alert/status elements, not every mention of error words inside chat history.
 - MP3 playback is subject to Chrome audio restrictions. An error alarm requires selecting a file for that tab.
 - If an error occurs, close the page dialog with × or Escape to silence it. Switching the tab's Watchdog OFF also stops audio. Different tabs have independent audio players.
@@ -35,6 +35,34 @@ For any local MP3 file, use the **file picker**. A file:// URL alone is not perm
 - Per-tab settings are session-only, and turn OFF when the browser session ends or the tab navigates to a different origin. Local sound blobs are deleted on tab close.
 - Built-in selectors are best-effort; unsupported sites require custom CSS selectors and manual testing.
 - This is a local developer extension, not a Chrome Web Store release.
+
+## Completion marker: plain text or Regex
+
+The default remains the literal `!!!ГОТОВО!!!` (Regex OFF). Enable **Regex (регулярное выражение)** below the marker field to use a regular expression. You can enter a raw JavaScript regex or `/pattern/i` with optional flags. The match must reach the **end of the most recent assistant reply**; a phrase appearing earlier does not trigger continuation.
+
+### Recognize either the explicit marker or a final next-stage summary
+
+Turn on Regex and paste:
+
+```regex
+(?:!!!ГОТОВО!!!|Следующий (?:этап|участок)[\s\S]{0,400})$
+```
+
+The `|` means **OR**. This recognizes `!!!ГОТОВО!!!`, `Следующий этап ...`, or `Следующий участок ...` at the end of the reply. The `{0,400}` bound allows up to 400 further characters after the next-stage phrase.
+
+To use only the next-stage summary:
+
+```regex
+Следующий (?:этап|участок)[\s\S]{0,400}$
+```
+
+To ignore capitalization, wrap the combined pattern in slashes and add `i`:
+
+```regex
+/(?:!!!ГОТОВО!!!|Следующий (?:этап|участок)[\s\S]{0,400})$/i
+```
+
+Invalid regex patterns display a warning and never trigger auto-send. Regex is only evaluated against the final 4000 characters. This is a heuristic and could trigger before a task is genuinely complete; an explicit unique end marker remains more reliable.
 
 ## CSS selectors (advanced)
 

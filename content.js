@@ -21,6 +21,9 @@
   let dialogError = null;
   let sendClicks = 0;
   let lastClickAt = 0;
+  let globalLockedUntil = 0;
+  let cooldownHydrated = false;
+  let hydrationEpoch = 0;
   let sending = false;
   let modeEpoch = 0;
   let lastUserTurnAtSend = null;
@@ -379,8 +382,29 @@
   }
 
   function cooldownRemainingMs() {
-    return lastClickAt ? Math.max(0,
-      config.cooldownSeconds * 1000 - (Date.now() - lastClickAt)) : 0;
+    const localUntil = lastClickAt ? lastClickAt + config.cooldownSeconds * 1000 : 0;
+    return Math.max(0, Math.max(localUntil, globalLockedUntil) - Date.now());
+  }
+
+  function hydrateCooldown() {
+    const epoch = ++hydrationEpoch;
+    const requestedRoute = location.href;
+    cooldownHydrated = false;
+    cancelPending();
+    chrome.runtime.sendMessage({ type: "GET_SEND_STATE" }).then(state => {
+      if (epoch !== hydrationEpoch || location.href !== requestedRoute) return;
+      // Fail closed if background is unavailable: do not bypass the lock.
+      if (!state || !state.ok || !Number.isFinite(state.lockedUntil)) {
+        recordEvent("blocked", "Автопродолжение недоступно: таймер не синхронизирован");
+        return;
+      }
+      globalLockedUntil = state.lockedUntil;
+      cooldownHydrated = true;
+      scheduleCheck();
+    }).catch(() => {
+      if (epoch === hydrationEpoch)
+        recordEvent("blocked", "Автопродолжение недоступно: таймер не синхронизирован");
+    });
   }
 
   function cancelPending() {
@@ -420,7 +444,9 @@
   async function sendIfReady(expectedKey) {
     pending = null;
     const expectedModeEpoch = modeEpoch;
-    if (sending || !config.enabled || config.mode !== "auto" || location.href !== route) return;
+    if (sending || !config.enabled || config.mode !== "auto" ||
+        !cooldownHydrated || cooldownRemainingMs() ||
+        location.href !== route) return;
     const selectors = currentSelectors();
     const result = latestAssistant(selectors.assistant);
     if (!result.node) return;
@@ -489,11 +515,17 @@
           return; // Fail closed, not open.
         }
         if (!claim || !claim.ok) {
+          if (claim && Number.isFinite(claim.lockedUntil))
+            globalLockedUntil = Math.max(globalLockedUntil, claim.lockedUntil);
           recordEvent("blocked", claim && claim.reason === "cooldown" ?
             "Глобальная пауза: ещё " + claim.retryAfterSeconds + " с" :
             "Повторная отправка заблокирована");
           return;
         }
+        globalLockedUntil = Math.max(globalLockedUntil,
+          Number.isFinite(claim.lockedUntil) ? claim.lockedUntil :
+          Date.now() + config.cooldownSeconds * 1000);
+        cancelPending();
         // Reserve even if the UI changes while we are waiting. The
         // background ledger already owns this reply and must never retry it.
         submittedAssistantTokens.add(token);
@@ -537,6 +569,7 @@
       acknowledgedAssistantAlerts.clear();
       route = location.href;
       lastClaimedAssistantOrdinal = 0;
+      hydrateCooldown();
       seenInitial = false;
       lastKey = "";
       handled = new Set();
@@ -547,6 +580,12 @@
       return;
     }
     if (config.mode === "errors") {
+      cancelPending();
+      return;
+    }
+    // Global lock is checked BEFORE inspecting the completion marker, so no
+    // new timers, editor fills or Send attempts can start during cooldown.
+    if (!cooldownHydrated || cooldownRemainingMs()) {
       cancelPending();
       return;
     }
@@ -633,6 +672,7 @@
       assistantOrdinal: latestAssistant(selectors.assistant).ordinal,
       lastClaimedAssistantOrdinal,
       cooldownRemainingSeconds: Math.ceil(cooldownRemainingMs() / 1000),
+      cooldownHydrated, globalLockedUntil,
       sending,
       toastEnabled: config.toastEnabled,
       editorFound: !!editor,
@@ -671,17 +711,21 @@
         "Режим: автопродолжение и ошибки");
       // Returning to auto mode must not replay an already completed reply.
       if (config.mode === "auto") {
+        hydrateCooldown();
         seenInitial = false;
         lastKey = "";
         handled = new Set();
       }
     }
     if (!config.enabled) {
+      cooldownHydrated = false;
+      hydrationEpoch++;
       cancelPending();
       errorTracker.reset();
       closeDialog();
     }
     if (!wasEnabled && config.enabled) {
+      hydrateCooldown();
       route = location.href;
       seenInitial = false;
       handled = new Set();
@@ -692,6 +736,7 @@
 
   chrome.runtime.sendMessage({ type: "GET_CONFIG" }).then((saved) => {
     config = Core.normalize(saved);
+    if (config.enabled) hydrateCooldown();
     check();
   }).catch(() => {});
 

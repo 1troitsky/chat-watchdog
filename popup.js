@@ -150,6 +150,9 @@
         "Вкладок с этой беседой: " + chatTabs.length,
         "Версия: " + chrome.runtime.getManifest().version +
           " · ID: " + chrome.runtime.id.slice(0, 8),
+        "Глобальный таймер синхронизирован: " + (result.cooldownHydrated ? "ДА" : "НЕТ"),
+        "Глобальная пауза: " +
+          Math.ceil(Math.max(0, (ledger?.lockedUntil || 0) - Date.now()) / 1000) + " с",
         "Пауза до следующей отправки: " + result.cooldownRemainingSeconds + " с",
         "Отправка в процессе: " + (result.sending ? "да" : "нет"),
         "Редактор: " + (result.editorFound ? "найден" : "НЕ НАЙДЕН"),

@@ -134,6 +134,7 @@ function createHarness(options = {}) {
       onMessage: { addListener(fn) { messageListener = fn; } },
       sendMessage: async (msg) => {
         sentRuntimeMessages.push(msg.type);
+        if (msg.type === "GET_SEND_STATE") return { ok: true, lockedUntil: options.lockedUntil || 0 };
         if (msg.type === "CLAIM_SEND") {
           if (claims.has(msg.token)) return { ok: false, reason: "duplicate" };
           claims.add(msg.token);

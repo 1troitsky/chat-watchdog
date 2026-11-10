@@ -40,6 +40,12 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }) {
     importScripts() {},
     console
   });
+  async function state(tabId = 7, url = "https://chatgpt.com/c/a") {
+    return new Promise(resolve => {
+      assert.equal(onMessage({ type: "GET_SEND_STATE" },
+        { tab: { id: tabId, url } }, resolve), true);
+    });
+  }
   async function claim(token, tabId = 7, url = "https://chatgpt.com/c/a", assistantOrdinal = 1) {
     return new Promise(resolve => {
       const listening = onMessage(
@@ -55,7 +61,7 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }) {
       enabled: true, mode: "auto", origin: "https://chatgpt.com", ...overrides
     });
   }
-  return { claim, configure, saved, clock,
+  return { claim, state, configure, saved, clock,
     get onUpdated() { return onUpdated; }, get onRemoved() { return onRemoved; } };
 }
 
@@ -160,4 +166,23 @@ test("a lower assistant ordinal fails closed after DOM virtualizes history", asy
   app.clock.now += 90000;
   assert.equal((await app.claim("reply-9", 7, "https://chatgpt.com/c/a", 9)).reason,
     "assistant-already-handled");
+});
+
+
+test("stored global lock deadline persists across worker restart and isolates conversations", async () => {
+  const saved = new Map(), clock = { now: 1000000 };
+  const app = createWorker(saved, clock);
+  app.configure(7);
+  app.configure(8);
+  assert.equal((await app.state()).lockedUntil, 0);
+  const claim = await app.claim("answer-1", 7, "https://chatgpt.com/c/a", 1);
+  assert.equal(claim.ok, true);
+  assert.equal(claim.lockedUntil, clock.now + 45000);
+  const restarted = createWorker(saved, clock);
+  assert.equal((await restarted.state(7, "https://chatgpt.com/c/a")).lockedUntil, clock.now + 45000);
+  assert.equal((await restarted.state(8, "https://chatgpt.com/c/b")).lockedUntil, 0);
+  clock.now += 20000;
+  assert.equal((await restarted.claim("answer-2", 7, "https://chatgpt.com/c/a", 2)).reason, "cooldown");
+  clock.now += 25000;
+  assert.equal((await restarted.claim("answer-2", 7, "https://chatgpt.com/c/a", 2)).ok, true);
 });

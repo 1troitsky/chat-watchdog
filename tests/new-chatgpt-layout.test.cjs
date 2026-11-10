@@ -88,7 +88,8 @@ function createChat(variant, userOwnsMarker = false) {
       onMessage: { addListener(fn) { messageListener = fn; } },
       sendMessage: async (message) => message.type === "GET_CONFIG" ?
         { enabled: true, marker: "!!!ГОТОВО!!!", reply: "Ок, продолжаем", delaySeconds: 5 } :
-        message.type === "CLAIM_SEND" ? { ok: true } : null
+        message.type === "CLAIM_SEND" ? { ok: true } :
+        message.type === "GET_SEND_STATE" ? { ok: true, lockedUntil: 0 } : null
     } }
   };
   context.globalThis = context;

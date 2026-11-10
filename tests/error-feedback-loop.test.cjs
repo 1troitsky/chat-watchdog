@@ -94,6 +94,7 @@ function createChat() {
       onMessage: { addListener() {} },
       sendMessage: async (msg) => {
         sent.push(msg.type);
+        if (msg.type === "GET_SEND_STATE") return { ok: true, lockedUntil: 0 };
         return msg.type === "GET_CONFIG" ? {
           enabled: true, mode: "errors", toastEnabled: true,
           errorWords: [

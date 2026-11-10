@@ -56,20 +56,24 @@ async function claimSend(tabId, token, assistantOrdinal, sender) {
     // A shared cooldown across ALL content scripts in this tab. An old reply
     // whose dedupe token unexpectedly changes still cannot cause rapid sends.
     if (prior && prior.origin === config.origin &&
-        Number.isFinite(prior.lastClaimAt)) {
-      const elapsed = now - prior.lastClaimAt;
-      if (elapsed < minIntervalMs) {
-        return { ok: false, reason: "cooldown",
-          retryAfterSeconds: Math.ceil((minIntervalMs - elapsed) / 1000) };
+        Number.isFinite(prior.lockedUntil || prior.lastClaimAt)) {
+      // Persist the absolute deadline and never shorten it because of a
+      // later settings change. Old ledgers used lastClaimAt only.
+      const lockedUntil = Number.isFinite(prior.lockedUntil) ? prior.lockedUntil :
+        prior.lastClaimAt + minIntervalMs;
+      if (now < lockedUntil) {
+        return { ok: false, reason: "cooldown", lockedUntil,
+          retryAfterSeconds: Math.ceil((lockedUntil - now) / 1000) };
       }
     }
     await chrome.storage.session.set({
       [scope]: {
         origin: config.origin, tokens: [...seen.slice(-499), token],
-        lastClaimAt: now, maxAssistantOrdinal: assistantOrdinal
+        lastClaimAt: now, lockedUntil: now + minIntervalMs,
+        maxAssistantOrdinal: assistantOrdinal
       }
     });
-    return { ok: true };
+    return { ok: true, lockedUntil: now + minIntervalMs };
   });
   sendClaimQueues.set(scope, work);
   try { return await work; }
@@ -132,6 +136,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     claimSend(tabId, message.token, message.assistantOrdinal, sender)
       .then(sendResponse)
       .catch(() => sendResponse({ ok: false, reason: "storage-error" }));
+    return true;
+  }
+  if (message.type === "GET_SEND_STATE") {
+    const scope = (() => {
+      try { return conversationKey(sender.tab.url); }
+      catch { return null; }
+    })();
+    if (!scope) {
+      sendResponse({ ok: false, lockedUntil: 0 });
+      return false;
+    }
+    chrome.storage.session.get([key(tabId), scope])
+      .then(items => {
+        const config = items[key(tabId)];
+        const ledger = items[scope];
+        if (!config || config.origin !== new URL(sender.tab.url).origin) {
+          sendResponse({ ok: false, lockedUntil: 0 });
+          return;
+        }
+        const until = ledger && ledger.origin === config.origin ?
+          (Number.isFinite(ledger.lockedUntil) ? ledger.lockedUntil :
+          (Number.isFinite(ledger.lastClaimAt) ?
+            ledger.lastClaimAt + Math.max(10, Math.min(3600,
+              Number(config.cooldownSeconds) || 45)) * 1000 : 0)) : 0;
+        sendResponse({ ok: true, lockedUntil: until,
+          lastOrdinal: ledger && ledger.origin === config.origin ?
+            ledger.maxAssistantOrdinal || 0 : 0 });
+      })
+      .catch(() => sendResponse({ ok: false, lockedUntil: 0 }));
     return true;
   }
   if (message.type === "GET_CONFIG") {

@@ -36,7 +36,8 @@ test("a short first assistant reply after enabling an empty chat is submitted", 
       onMessage: { addListener() {} },
       sendMessage: (msg) => Promise.resolve(msg.type === "GET_CONFIG" ?
         { enabled: true, marker: "!!!ГОТОВО!!!", delaySeconds: 5, reply: "Ок, продолжаем" } :
-        msg.type === "CLAIM_SEND" ? { ok: true } : null)
+        msg.type === "CLAIM_SEND" ? { ok: true } :
+        msg.type === "GET_SEND_STATE" ? { ok: true, lockedUntil: 0 } : null)
     } }
   };
   class TextArea {

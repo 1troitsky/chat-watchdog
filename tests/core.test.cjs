@@ -107,6 +107,14 @@ test("an unrelated DOM change does not re-arm an already dismissed error", () =>
   assert.equal(tracker.observe([error]), null);
 });
 
+test("ChatGPT selector supports 2026 search-unit and turn-key markup, keeping old selector", () => {
+  const selector = Core.selectorsFor("chatgpt.com").assistant;
+  assert.match(selector, /data-message-author-role/);
+  assert.match(selector, /data-content-search-unit-key/);
+  assert.match(selector, /data-turn-key/);
+  assert.match(selector, /data-user-message-bubble/);
+  assert.match(Core.selectorsFor("claude.ai").assistant, /claude-message/);
+});
 test("uses different selectors for different assistants", () => {
   assert.match(Core.selectorsFor("chatgpt.com").assistant, /data-message-author-role/);
   assert.match(Core.selectorsFor("chatgpt.com").editor, /pending-conversation-input/);

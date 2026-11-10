@@ -109,6 +109,12 @@
       output.textContent = [
         "Монитор: " + (result.enabled ? "ON" : "OFF"),
         "Сообщений ИИ: " + result.assistantCount,
+        "Режим поиска: " + result.assistantDetection,
+        "Старые роли: " + result.legacyAssistantCount,
+        "Новые search-unit: " + result.chatGptSearchUnitCount,
+        "Новые turn-key: " + result.chatGptTurnCount,
+        "Сообщения пользователя: " + result.chatGptUserBubbleCount,
+        "Свой селектор ИИ: " + (result.customAssistantSelector ? "да" : "нет"),
         "Маркер в последнем ответе: " + (result.markerDetected ? "ДА" : "НЕТ"),
         "Редактор: " + (result.editorFound ? "найден" : "НЕ НАЙДЕН"),
         "Поле пустое: " + (result.editorEmpty ? "да" : "нет"),

@@ -37,9 +37,76 @@
     };
   }
 
+  const messageIds = new WeakMap();
+  let nextMessageId = 1;
+
+  function isChatGPT() {
+    return location.hostname === "chatgpt.com" ||
+      location.hostname.endsWith(".chatgpt.com") ||
+      location.hostname === "chat.openai.com";
+  }
+
+  // The current app-shell has multiple account-dependent DOM variants.
+  // If neither traditional roles nor search-unit keys are present, we can
+  // locate a marker in the rendered chat *after the latest user bubble*.
+  // Without proof of which content belongs to the assistant, fail closed.
+  function markerAfterLastUser() {
+    if (!isChatGPT() || typeof document.querySelector !== "function") return [];
+    const users = query(
+      '[data-user-message-bubble="true"], [data-content-search-unit-key$=":user"], [data-message-author-role="user"]'
+    ).filter(visible);
+    const lastUser = users[users.length - 1];
+    if (!lastUser || typeof lastUser.compareDocumentPosition !== "function") return [];
+    const root = document.querySelector("main") ||
+      document.querySelector('[role="main"]') || document.body;
+    if (!root || typeof root.querySelectorAll !== "function") return [];
+
+    const nodes = Array.from(root.querySelectorAll(
+      'p, li, blockquote, [role="paragraph"], [data-thread-find-target], [data-chatgpt-conversation-selection-target]'
+    )).slice(-800);
+    return nodes.filter((node) => {
+      if (!visible(node) || !Core.hasMarker(textOf(node), config.marker, config.markerRegex)) return false;
+      if (typeof node.closest === "function" && node.closest(
+        '[data-user-message-bubble], [data-message-author-role="user"], [data-content-search-unit-key$=":user"], [contenteditable], [data-composer-input], form, nav, aside, header, footer, [role="dialog"], pre, code, #chat-watchdog-alert-host'
+      )) return false;
+      if (typeof lastUser.contains === "function" && lastUser.contains(node)) return false;
+      if (typeof node.contains === "function" && node.contains(lastUser)) return false;
+      // Bit 4 (DOCUMENT_POSITION_FOLLOWING): assistant text follows user.
+      return !!(lastUser.compareDocumentPosition(node) & 4);
+    });
+  }
+
+  function assistantElements(selector) {
+    // User-supplied selectors take priority, but a stale manual selector
+    // should not break the built-in compatible detection.
+    const matched = query(selector).filter(visible);
+    if (matched.length) return { nodes: matched, source: config.assistantSelector ? "custom" : "builtin" };
+    const builtin = Core.selectorsFor(location.hostname).assistant;
+    if (config.assistantSelector && builtin !== selector) {
+      const fallback = query(builtin).filter(visible);
+      if (fallback.length) return { nodes: fallback, source: "builtin-fallback" };
+    }
+    const markerNodes = markerAfterLastUser();
+    return { nodes: markerNodes, source: markerNodes.length ? "marker-after-user" : "none" };
+  }
+
   function latestAssistant(selector) {
-    const nodes = query(selector).filter(visible);
-    return { node: nodes[nodes.length - 1], count: nodes.length };
+    const result = assistantElements(selector);
+    const nodes = result.nodes;
+    return { node: nodes[nodes.length - 1], count: nodes.length, source: result.source };
+  }
+
+  function messageKey(node, count, text) {
+    const container = typeof node.closest === "function" &&
+      node.closest("[data-message-id], [data-content-search-unit-key], [data-turn-key]");
+    const keyFromDom = container && (
+      container.getAttribute("data-message-id") ||
+      container.getAttribute("data-content-search-unit-key") ||
+      container.getAttribute("data-turn-key")
+    );
+    if (!messageIds.has(node)) messageIds.set(node, nextMessageId++);
+    return route + "|" + (keyFromDom || "dom:" + messageIds.get(node)) +
+      "|" + count + "|" + text;
   }
 
   function textOf(element) {
@@ -209,8 +276,7 @@
     const result = latestAssistant(selectors.assistant);
     if (!result.node) return;
     const text = textOf(result.node);
-    const messageId = result.node.closest("[data-message-id]")?.getAttribute("data-message-id") || "";
-    const key = route + "|" + result.count + "|" + messageId + "|" + text;
+    const key = messageKey(result.node, result.count, text);
     if (key !== expectedKey || !Core.hasMarker(text, config.marker, config.markerRegex) ||
       hasStopButton(selectors.stop)) return;
     if (config.completionSelector && !query(config.completionSelector).some(visible)) return;
@@ -258,8 +324,7 @@
       return;
     }
     const text = textOf(result.node);
-    const messageId = result.node.closest("[data-message-id]")?.getAttribute("data-message-id") || "";
-    const key = route + "|" + result.count + "|" + messageId + "|" + text;
+    const key = messageKey(result.node, result.count, text);
     if (key !== lastKey) {
       lastKey = key;
       stableSince = Date.now();
@@ -290,12 +355,19 @@
   // Local-only diagnostics: return counts and booleans, never message content.
   function diagnosticSnapshot() {
     const selectors = currentSelectors();
-    const assistantNodes = query(selectors.assistant).filter(visible);
+    const found = assistantElements(selectors.assistant);
+    const assistantNodes = found.nodes;
     const lastAssistant = assistantNodes[assistantNodes.length - 1];
     const editor = findEditor(selectors.editor);
     return {
       enabled: config.enabled,
       assistantCount: assistantNodes.length,
+      assistantDetection: found.source,
+      legacyAssistantCount: query('[data-message-author-role="assistant"]').length,
+      chatGptSearchUnitCount: query('[data-content-search-unit-key$=":assistant"]').length,
+      chatGptTurnCount: query('[data-turn-key]').length,
+      chatGptUserBubbleCount: query('[data-user-message-bubble="true"]').length,
+      customAssistantSelector: !!config.assistantSelector,
       markerDetected: !!lastAssistant &&
         Core.hasMarker(textOf(lastAssistant), config.marker, config.markerRegex),
       editorFound: !!editor,

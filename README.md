@@ -7,7 +7,7 @@ A small, local Chrome/Chromium Manifest V3 extension for continuing AI chat task
 - Independent ON/OFF and configuration for **each browser tab**, even for two tabs on the same AI website.
 - Waits for the assistant's response to **end with** the configured text marker (default: !!!ГОТОВО!!!) or match an optional **Regex** at the end of the answer, and for the stop-generation control to disappear; then sends the configured follow-up after the chosen delay (5 seconds by default).
 - Optional local MP3 alert and a **Chatbot Mistake** dialog when an error phrase appears in a visible error/status element. Closing the dialog (× or Escape) stops that tab's sound immediately. An unchanged visible error does not restart the alert, but the next appearance of an error triggers again even when the text is identical. The detector also handles a site recycling the same alert element by watching message replacement and visibility changes.
-- Automatic detection for ChatGPT, Claude, Gemini, and a basic DeepSeek adapter. Other UIs can use optional CSS selectors. Web-chat interfaces change; these selectors need real-browser verification.
+- Automatic detection for old and new ChatGPT layouts (role attributes, assistant search units, turn keys, or a guarded marker after the last user bubble), Claude, Gemini, and a basic DeepSeek adapter. Other UIs can use optional CSS selectors. Web-chat interfaces change; these selectors need real-browser verification.
 - Per-site permission is requested **only when you switch ON** in that tab. No blanket permission at installation.
 - No analytics, trackers, external scripts, network requests, or backend. Selected sounds stay in browser IndexedDB and **are not uploaded**.
 
@@ -72,7 +72,7 @@ Invalid regex patterns display a warning and never trigger auto-send. Regex is o
 
 | Field in the extension | Example CSS selector |
 | --- | --- |
-| Assistant message / Сообщение ИИ | `[data-message-author-role="assistant"]` |
+| Assistant message / Сообщение ИИ | `[data-message-author-role="assistant"]` or `[data-content-search-unit-key$=":assistant"]` or `[data-turn-key]:not(:has([data-user-message-bubble="true"]))` |
 | Message editor / Поле ввода | `#prompt-textarea` or `#pending-conversation-input` (as in the newer browser composer) |
 | Send button / Кнопка отправки | `button[data-testid="send-button"]` or `button[aria-label="Отправить"]` |
 | Stop button / Кнопка остановки | `button[data-testid="stop-button"]` |
@@ -119,7 +119,7 @@ document.querySelectorAll('button[data-testid="send-button"]')
 
 Open **Chat Watchdog → CSS-селекторы (необязательно) → Проверить элементы чата** while viewing the conversation. The diagnostic checks only the current tab and reports element counts and booleans; it does not copy or upload conversation text.
 
-Expected in an idle chat after a new assistant message ending with the marker: **Сообщений ИИ** greater than zero, **Маркер** = ДА, **Редактор** = найден, **Поле пустое** = да, **Кнопка отправки активна** = да and **Кнопка остановки видна** = нет. The waiting flag appears while the configured delay is counting down. If the assistant count is zero, inspect a *live assistant reply* (not the composer) and configure its CSS selector.
+Expected in an idle chat after a new assistant message ending with the marker: **Сообщений ИИ** greater than zero, **Маркер** = ДА, **Редактор** = найден, **Поле пустое** = да, **Кнопка отправки активна** = да and **Кнопка остановки видна** = нет. The waiting flag appears while the configured delay is counting down. If the assistant count is zero, check the additional counters for legacy roles, search-unit keys, turn keys, and user bubbles. You may need to inspect a *live assistant reply* (not the composer) and configure its CSS selector. If a stale custom selector was entered, clear it to use automatic detection. The generic marker fallback only runs when the DOM confirms the latest user message and the candidate marker is after it; it deliberately refuses to send when message ownership cannot be determined.
 
 Note that the HTML source of a ChatGPT page can contain only the initial app shell. For a JavaScript error, copy its complete message and source file from Chrome DevTools → Console.
 

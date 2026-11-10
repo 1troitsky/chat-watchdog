@@ -88,7 +88,8 @@
     };
     if (host === "chatgpt.com" || host.endsWith(".chatgpt.com") || host === "chat.openai.com") {
       return {
-        assistant: '[data-message-author-role="assistant"]',
+        // Old ChatGPT roles and 2026 Chat/Work search-unit / turn layouts.
+        assistant: '[data-message-author-role="assistant"], [data-message-role="assistant"], [data-role="assistant"], [data-message-author="assistant"], [data-content-search-unit-key$=":assistant"], [data-content-search-unit-key$=":assistant:final"], [data-turn-key]:not(:has([data-user-message-bubble="true"]))',
         editor: '#prompt-textarea, #pending-conversation-input, [data-composer-input] textarea, [data-testid="composer-input"], [contenteditable="true"][role="textbox"]',
         send: 'button[data-testid="send-button"], button[aria-label="Отправить"], button[aria-label="Send message"]',
         stop: 'button[data-testid="stop-button"], button[aria-label="Stop generating"], button[aria-label="Остановить генерацию"]'

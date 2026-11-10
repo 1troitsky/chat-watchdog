@@ -171,6 +171,10 @@ function createHarness(options = {}) {
   }
   async function advance(ms) {
     time += ms;
+    // Chrome delivers the background ARM_SEND acknowledgement as a
+    // microtask before later timer callbacks. Flush the stubbed runtime
+    // response before checking which simulated timers have become due.
+    await flush();
     for (let pass = 0; pass < 15; pass++) {
       const due = [...jobs].filter(([, task]) => task.due <= time);
       if (!due.length) break;

@@ -33,8 +33,24 @@ async function claimSend(tabId, token, sender) {
     const seen = prior && prior.origin === config.origin && Array.isArray(prior.tokens) ?
       prior.tokens : [];
     if (seen.includes(token)) return { ok: false, reason: "duplicate" };
+    const now = Date.now();
+    const minIntervalMs = Math.max(10, Math.min(3600,
+      Number(config.cooldownSeconds) || 45)) * 1000;
+    // A shared cooldown across ALL content scripts in this tab. An old reply
+    // whose dedupe token unexpectedly changes still cannot cause rapid sends.
+    if (prior && prior.origin === config.origin &&
+        Number.isFinite(prior.lastClaimAt)) {
+      const elapsed = now - prior.lastClaimAt;
+      if (elapsed < minIntervalMs) {
+        return { ok: false, reason: "cooldown",
+          retryAfterSeconds: Math.ceil((minIntervalMs - elapsed) / 1000) };
+      }
+    }
     await chrome.storage.session.set({
-      [sentKey(tabId)]: { origin: config.origin, tokens: [...seen.slice(-499), token] }
+      [sentKey(tabId)]: {
+        origin: config.origin, tokens: [...seen.slice(-499), token],
+        lastClaimAt: now
+      }
     });
     return { ok: true };
   });

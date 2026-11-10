@@ -15,6 +15,7 @@
   const errorTracker = Core.createErrorTracker();
   const acknowledgedAssistantAlerts = new Set();
   const sendGuard = Core.createSendGuard();
+  const submittedAssistantTokens = new Set();
   let dialogRoot = null;
   let dialogError = null;
   let sendClicks = 0;
@@ -135,12 +136,27 @@
     return { node: nodes[nodes.length - 1], count: nodes.length, source: result.source };
   }
 
-  function sendToken(node, text) {
-    // One automatic submission per originating USER turn. React can replace
-    // every assistant element, but this logical turn stays unchanged.
-    const user = latestUserTurn();
-    const fallback = Core.userTurnFingerprint(0, text);
-    return route + "|turn:" + (user.logicalTurn || "answer:" + fallback);
+  function sendToken(node, text, count) {
+    // Use the identity of the ASSISTANT reply, never the latest USER turn:
+    // after our click ChatGPT inserts our own user message, which changes
+    // the old user-turn fingerprint and used to permit duplicate sends.
+    // ChatGPT's turn keys survive React re-renders of the same reply.
+    const identifiers = [
+      ["[data-turn-key]", "data-turn-key"],
+      ["[data-message-id]", "data-message-id"],
+      ["[data-content-search-unit-key]", "data-content-search-unit-key"]
+    ];
+    for (const [selector, attribute] of identifiers) {
+      const owner = node && typeof node.closest === "function" &&
+        node.closest(selector);
+      const value = owner && owner.getAttribute(attribute);
+      if (value) return route + "|assistant:" + value;
+    }
+    // On older/unknown sites without stable reply IDs, fail closed for an
+    // identical answer in the same assistant slot. A new user bubble alone
+    // must NOT turn an old reply into a new send opportunity.
+    return route + "|assistant-fallback:" +
+      Core.userTurnFingerprint(count || 0, text);
   }
 
   function messageKey(node, count, text) {
@@ -406,7 +422,8 @@
     if (!result.node) return;
     const text = textOf(result.node);
     const key = messageKey(result.node, result.count, text);
-    if (key !== expectedKey ||
+    const assistantToken = sendToken(result.node, text, result.count);
+    if (key !== expectedKey || submittedAssistantTokens.has(assistantToken) ||
         !Core.completionMatches(text, config.marker, config.markerRegex) ||
         hasStopButton(selectors.stop) ||
         sendGuard.alreadySent(text, latestUserTurn().logicalTurn)) return;
@@ -454,7 +471,8 @@
         // The background worker owns the deduplication ledger for this tab.
         // It serializes claims and persists them in chrome.storage.session,
         // preventing another content-script instance from sending as well.
-        const token = sendToken(current.node, text);
+        const token = sendToken(current.node, text, current.count);
+        if (submittedAssistantTokens.has(token)) return;
         let claim;
         try {
           claim = await chrome.runtime.sendMessage({ type: "CLAIM_SEND", token });
@@ -463,27 +481,35 @@
           return; // Fail closed, not open.
         }
         if (!claim || !claim.ok) {
-          recordEvent("blocked", "Повторная отправка заблокирована");
+          recordEvent("blocked", claim && claim.reason === "cooldown" ?
+            "Глобальная пауза: ещё " + claim.retryAfterSeconds + " с" :
+            "Повторная отправка заблокирована");
           return;
         }
+        // Reserve even if the UI changes while we are waiting. The
+        // background ledger already owns this reply and must never retry it.
+        submittedAssistantTokens.add(token);
         // Claim may take time: conditions can change during the await.
         // A claim is intentionally never rolled back, even if UI changed;
         // preventing duplicate Sends is more important than retrying blindly.
         if (!config.enabled || config.mode !== "auto" || modeEpoch !== expectedModeEpoch ||
             location.href !== route || hasStopButton(selectors.stop) ||
-            editorText(editor) !== config.reply ||
-            !findSendButton(selectors.send)) return;
+            editorText(editor) !== config.reply) return;
         const verified = latestAssistant(selectors.assistant);
         if (!verified.node ||
             !followsUser(verified.node, latestUserTurn().node) ||
-            sendToken(verified.node, textOf(verified.node)) !== token ||
+            sendToken(verified.node, textOf(verified.node), verified.count) !== token ||
             !Core.completionMatches(textOf(verified.node), config.marker, config.markerRegex)) return;
+        const finalButton = findSendButton(selectors.send);
+        if (!finalButton || Core.isStopAction(finalButton) ||
+            hasStopButton(selectors.stop) || !config.enabled ||
+            config.mode !== "auto" || modeEpoch !== expectedModeEpoch) return;
         sendGuard.record(text, userTurn);
         lastUserTurnAtSend = userTurn;
         handled.add(expectedKey);
         lastClickAt = Date.now();
         sendClicks++;
-        button.click();
+        finalButton.click();
         recordEvent("sent", "Отправлено: " + config.reply);
         return;
       }
@@ -534,7 +560,9 @@
       if (Core.completionMatches(text, config.marker, config.markerRegex)) handled.add(key);
       return;
     }
-    if (handled.has(key) || sending || !Core.completionMatches(text, config.marker, config.markerRegex) ||
+    if (handled.has(key) || sending ||
+      submittedAssistantTokens.has(sendToken(result.node, text, result.count)) ||
+      !Core.completionMatches(text, config.marker, config.markerRegex) ||
       sendGuard.alreadySent(text, latestUserTurn().logicalTurn)) return;
     if (Date.now() - stableSince < (config.marker ? 1500 : 4500)) return;
     if (hasStopButton(selectors.stop)) {
@@ -590,6 +618,7 @@
         sendGuard.alreadySent(textOf(lastAssistant), latestUserTurn().logicalTurn),
       logicalUserTurnDetected: !!latestUserTurn().logicalTurn,
       sendClicks,
+      rememberedAssistantReplies: submittedAssistantTokens.size,
       cooldownRemainingSeconds: Math.ceil(cooldownRemainingMs() / 1000),
       sending,
       toastEnabled: config.toastEnabled,

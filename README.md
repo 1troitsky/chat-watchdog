@@ -5,7 +5,7 @@ A small, local Chrome/Chromium Manifest V3 extension for continuing AI chat task
 ## Features
 
 - Independent ON/OFF and configuration for **each browser tab**, even for two tabs on the same AI website.
-- Waits for the assistant's response to **end with** the configured text marker (default: !!!ГОТОВО!!!) or match an optional **Regex** at the end of the answer, and for the stop-generation control to disappear; then sends the configured follow-up after the chosen delay (5 seconds by default).
+- Waits for the assistant's response to **end with** the configured text marker (default: !!!ГОТОВО!!!) or match an optional **Regex** at the end of the answer. **Leave the marker empty to continue after every finished assistant reply** (stable text + stop-generation button absent), with no Regex required. The follow-up is sent after the configured delay (5 seconds by default).
 - Optional local MP3 alert and a **Chatbot Mistake** dialog when an error phrase appears in a visible error/status element. Closing the dialog (× or Escape) stops that tab's sound immediately. An unchanged visible error does not restart the alert, but the next appearance of an error triggers again even when the text is identical. The detector also handles a site recycling the same alert element by watching message replacement and visibility changes.
 - Automatic detection for old and new ChatGPT layouts (role attributes, assistant search units, turn keys, or a guarded marker after the last user bubble), Claude, Gemini, and a basic DeepSeek adapter. Other UIs can use optional CSS selectors. Web-chat interfaces change; these selectors need real-browser verification.
 - Per-site permission is requested **only when you switch ON** in that tab. No blanket permission at installation.
@@ -27,9 +27,10 @@ For any local MP3 file, use the **file picker**. A file:// URL alone is not perm
 - The extension is **OFF by default**. Enabling skips an already-completed assistant response to avoid replaying old tasks; a new conversation with no responses is armed immediately, including for a very short first response.
 - It never overwrites a nonempty input draft.
 - After sending a follow-up, it remembers the logical user turn, based on the visible user-message ordinal and normalized text rather than HTML node identity. It will not send twice if the SPA rerenders both the user message and the assistant reply. A genuinely new user turn can still trigger its own continuation. When no reliable user turn can be located, repeated identical replies are conservatively ignored.
+- A small notification indicates a follow-up was sent. The extension never cuts text out of, or rewrites, ChatGPT's rendered messages because React could restore the changed DOM and the message is not actually changed on the server.
 - It uses UI automation, not the AI provider's API, and does not guarantee that a response is correct or that a task has truly completed.
-- Completion is detected by plain text or an end-anchored Regex at the **end of the last assistant message**, stable text, an absent stop button, and optionally a user-provided completion element.
-- Errors are detected in toast/alert/status elements, not every mention of error words inside chat history.
+- Completion is detected by plain text or an end-anchored Regex at the **end of the last assistant message** (or no marker at all if the field is empty), stable text, an absent stop button, and optionally a user-provided completion element. An assistant message **must follow the most recent user message**; an old completed reply visible above a newly sent user turn can never cause another send.
+- Errors are detected in toast/alert/status elements and as standalone lines in the **latest assistant response**. Merely quoting an error phrase within an ordinary sentence will not alarm. The default error list includes the exact Russian strings «Нет ответа от ChatGPT. Проверьте подключение к интернету», «!!!ЕСТЬ ЗАДАНИЕ ДЛЯ АГЕНТА!!!», «!!!ЖДУ РЕШЕНИЕ!!!», «!!!У НАС ПРОБЛЕМА!!!», «!!НУЖНА ЛОКАЛЬНАЯ ПРОВЕРКА!!!».
 - MP3 playback is subject to Chrome audio restrictions. An error alarm requires selecting a file for that tab.
 - If an error occurs, close the page dialog with × or Escape to silence it. Switching the tab's Watchdog OFF also stops audio. Different tabs have independent audio players.
 - Timers in background tabs may be throttled by Chrome.
@@ -37,9 +38,9 @@ For any local MP3 file, use the **file picker**. A file:// URL alone is not perm
 - Built-in selectors are best-effort; unsupported sites require custom CSS selectors and manual testing.
 - This is a local developer extension, not a Chrome Web Store release.
 
-## Completion marker: plain text or Regex
+## Completion marker: optional, plain text or Regex
 
-The default remains the literal `!!!ГОТОВО!!!` (Regex OFF). Enable **Regex (регулярное выражение)** below the marker field to use a regular expression. You can enter a raw JavaScript regex or `/pattern/i` with optional flags. The match must reach the **end of the most recent assistant reply**; a phrase appearing earlier does not trigger continuation.
+The default remains the literal `!!!ГОТОВО!!!` (Regex OFF). **An empty marker field now explicitly disables marker matching**: Chat Watchdog sends the follow-up after any new completed assistant answer. This requires detecting the latest assistant turn after the latest user turn; if ordering cannot be verified on a site, auto-send safely waits. When the marker is empty, the Regex toggle does not matter. Enable **Regex (регулярное выражение)** below the marker field to use a regular expression. You can enter a raw JavaScript regex or `/pattern/i` with optional flags. The match must reach the **end of the most recent assistant reply**; a phrase appearing earlier does not trigger continuation.
 
 ### Recognize either the explicit marker or a final next-stage summary
 

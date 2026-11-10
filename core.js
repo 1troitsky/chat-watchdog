@@ -7,7 +7,7 @@
     markerRegex: false,
     reply: "Ок, продолжаем",
     delaySeconds: 5,
-    errorWords: "Соединение прервано\nОшибка соединения\nВы достигли лимита\nВы достигни лимита\nConnection interrupted\nNetwork error\nRate limit reached",
+    errorWords: "Соединение прервано\nОшибка соединения\nНет ответа от ChatGPT. Проверьте подключение к интернету\nВы достигли лимита\nВы достигни лимита\nConnection interrupted\nNetwork error\nRate limit reached\n!!!ЕСТЬ ЗАДАНИЕ ДЛЯ АГЕНТА!!!\n!!!ЖДУ РЕШЕНИЕ!!!\n!!!У НАС ПРОБЛЕМА!!!\n!!НУЖНА ЛОКАЛЬНАЯ ПРОВЕРКА!!!",
     assistantSelector: "",
     editorSelector: "",
     sendSelector: "",
@@ -34,7 +34,7 @@
         config[key] = String(config[key] == null ? "" : config[key]);
       }
     }
-    config.marker = config.marker.trim() || DEFAULTS.marker;
+    config.marker = config.marker.trim();
     config.reply = config.reply.trim() || DEFAULTS.reply;
     return config;
   }
@@ -67,6 +67,23 @@
     } catch {
       return false;
     }
+  }
+
+  // When the marker is intentionally empty, completion is determined by
+  // the finished assistant turn (stable text + no stop button).
+  function completionMatches(text, marker, markerRegex = false) {
+    if (!String(text || "").trim()) return false;
+    return !String(marker || "").trim() || hasMarker(text, marker, markerRegex);
+  }
+
+  // Standalone error markers in assistant replies are alerts; mention of a
+  // phrase inside a paragraph should not trigger an alarm.
+  function findErrorLine(text, phrases) {
+    const lines = String(text || "").split(/\r?\n/).map(line => line.trim());
+    return String(phrases || "").split(/\r?\n/)
+      .map(phrase => phrase.trim())
+      .filter(Boolean)
+      .find(phrase => lines.some(line => line.toLocaleLowerCase() === phrase.toLocaleLowerCase())) || null;
   }
 
   function findError(text, phrases) {
@@ -200,7 +217,7 @@
     };
   }
 
-  const api = { DEFAULTS, normalize, compileMarker, hasMarker, findError, selectorsFor, createErrorTracker, createSendGuard, userTurnFingerprint };
+  const api = { DEFAULTS, normalize, compileMarker, hasMarker, completionMatches, findError, findErrorLine, selectorsFor, createErrorTracker, createSendGuard, userTurnFingerprint };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.ChatWatchdogCore = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

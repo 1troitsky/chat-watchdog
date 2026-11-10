@@ -36,7 +36,7 @@
   render();
 
   function markerError() {
-    if (!config.markerRegex) return "";
+    if (!config.markerRegex || !config.marker.trim()) return "";
     try {
       ChatWatchdogCore.compileMarker(config.marker);
       return "";
@@ -115,7 +115,9 @@
         "Новые turn-key: " + result.chatGptTurnCount,
         "Сообщения пользователя: " + result.chatGptUserBubbleCount,
         "Свой селектор ИИ: " + (result.customAssistantSelector ? "да" : "нет"),
-        "Маркер в последнем ответе: " + (result.markerDetected ? "ДА" : "НЕТ"),
+        "Режим без маркера: " + (result.markerDisabled ? "ДА" : "НЕТ"),
+        "Последний ответ после пользователя: " + (result.assistantFollowsLastUser ? "ДА" : "НЕТ"),
+        "Условие продолжения: " + (result.markerDetected ? "ДА" : "НЕТ"),
         "Ход пользователя распознан: " + (result.logicalUserTurnDetected ? "да" : "нет"),
         "Маркер уже отправлен: " + (result.markerAlreadySent ? "ДА" : "НЕТ"),
         "Нажатий Отправить монитором: " + result.sendClicks,

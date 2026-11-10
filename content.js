@@ -17,6 +17,7 @@
   let dialogRoot = null;
   let dialogError = null;
   let sendClicks = 0;
+  let lastClickAt = 0;
 
   function query(selector) {
     if (!selector) return [];
@@ -70,8 +71,19 @@
     return { node: null, logicalTurn: null };
   }
 
+  function followsUser(assistant, user) {
+    if (!user) return true;
+    if (!assistant || typeof user.compareDocumentPosition !== "function") return false;
+    // A following assistant must be a distinct node strictly after the
+    // most recent user turn. A stale assistant before a new user cannot fire.
+    return !!(user.compareDocumentPosition(assistant) & 4) &&
+      !(typeof user.contains === "function" && user.contains(assistant)) &&
+      !(typeof assistant.contains === "function" && assistant.contains(user));
+  }
+
   // If neither traditional roles nor search-unit keys are present, locate
-  // a marker in rendered chat content AFTER the latest user bubble.
+  // visible reply content AFTER the latest user bubble. In no-marker mode
+  // this also allows ordinary non-empty replies (not just marker paragraphs).
   function markerAfterLastUser() {
     if (!isChatGPT() || typeof document.querySelector !== "function") return [];
     const lastUser = latestUserTurn().node;
@@ -84,14 +96,14 @@
       'p, li, blockquote, [role="paragraph"], [data-thread-find-target], [data-chatgpt-conversation-selection-target]'
     )).slice(-800);
     return nodes.filter((node) => {
-      if (!visible(node) || !Core.hasMarker(textOf(node), config.marker, config.markerRegex)) return false;
+      if (!visible(node) || !Core.completionMatches(textOf(node), config.marker, config.markerRegex) &&
+        !Core.findErrorLine(textOf(node), config.errorWords)) return false;
       if (typeof node.closest === "function" && node.closest(
         '[data-user-message-bubble], [data-message-author-role="user"], [data-content-search-unit-key$=":user"], [contenteditable], [data-composer-input], form, nav, aside, header, footer, [role="dialog"], pre, code, #chat-watchdog-alert-host'
       )) return false;
       if (typeof lastUser.contains === "function" && lastUser.contains(node)) return false;
       if (typeof node.contains === "function" && node.contains(lastUser)) return false;
-      // Bit 4 (DOCUMENT_POSITION_FOLLOWING): assistant text follows user.
-      return !!(lastUser.compareDocumentPosition(node) & 4);
+      return followsUser(node, lastUser);
     });
   }
 
@@ -111,7 +123,9 @@
 
   function latestAssistant(selector) {
     const result = assistantElements(selector);
-    const nodes = result.nodes;
+    const all = result.nodes;
+    const lastUser = latestUserTurn().node;
+    const nodes = all.filter(node => followsUser(node, lastUser));
     return { node: nodes[nodes.length - 1], count: nodes.length, source: result.source };
   }
 
@@ -229,6 +243,8 @@
     return current;
   }
 
+  // Display errors from real site alerts OR a standalone alert phrase in the
+  // assistant's latest response. Do not inspect chat-history user messages.
   function checkError() {
     const selector = config.errorSelector ||
       '[role="alert"], [role="status"], [data-sonner-toast], [data-testid*="error"], .toast, .error-banner';
@@ -242,6 +258,15 @@
       const signature = matched + ":" + textOf(target).slice(0, 500);
       matches.push({ node: target, signature, phrase: matched });
     }
+    const lastReply = latestAssistant(currentSelectors().assistant).node;
+    if (lastReply && visible(lastReply)) {
+      const phrase = Core.findErrorLine(textOf(lastReply), config.errorWords);
+      if (phrase) matches.push({
+        node: lastReply,
+        signature: "assistant:" + phrase + ":" + textOf(lastReply).slice(0, 500),
+        phrase
+      });
+    }
     const fresh = errorTracker.observe(matches);
     if (fresh) {
       if (dialogRoot) {
@@ -252,6 +277,22 @@
       }
     }
     return matches.length > 0;
+  }
+
+  function showToast(message) {
+    if (!document.body || typeof document.createElement !== "function") return;
+    const old = document.getElementById && document.getElementById("chat-watchdog-toast");
+    if (old) old.remove();
+    const toast = document.createElement("div");
+    toast.id = "chat-watchdog-toast";
+    toast.textContent = message;
+    toast.style.cssText =
+      "position:fixed;bottom:90px;left:50%;transform:translateX(-50%);" +
+      "z-index:2147483646;background:#222;color:#fff;border-radius:10px;" +
+      "padding:9px 14px;font:13px system-ui,sans-serif;pointer-events:none;" +
+      "box-shadow:0 6px 28px #0005";
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 3200);
   }
 
   function cancelPending() {
@@ -296,10 +337,12 @@
     if (!result.node) return;
     const text = textOf(result.node);
     const key = messageKey(result.node, result.count, text);
-    if (key !== expectedKey || !Core.hasMarker(text, config.marker, config.markerRegex) ||
+    if (key !== expectedKey || !Core.completionMatches(text, config.marker, config.markerRegex) ||
       hasStopButton(selectors.stop) ||
       sendGuard.alreadySent(text, latestUserTurn().logicalTurn)) return;
     if (config.completionSelector && !query(config.completionSelector).some(visible)) return;
+    // A system or assistant error must preempt any automatic continuation.
+    if (checkError()) return;
     const editor = findEditor(selectors.editor);
     if (!editor || editorText(editor)) return; // Never overwrite a human's draft.
     fillEditor(editor, config.reply);
@@ -317,7 +360,11 @@
         sendGuard.record(text, latestUserTurn().logicalTurn);
         handled.add(expectedKey);
         sendClicks++;
+        lastClickAt = Date.now();
         button.click();
+        showToast(config.marker ? "Chat Watchdog: маркер обработан" :
+          "Chat Watchdog: ответ завершён");
+
         return;
       }
     }
@@ -357,10 +404,10 @@
     }
     if (!seenInitial) {
       seenInitial = true;
-      if (Core.hasMarker(text, config.marker, config.markerRegex)) handled.add(key);
+      if (Core.completionMatches(text, config.marker, config.markerRegex)) handled.add(key);
       return;
     }
-    if (handled.has(key) || !Core.hasMarker(text, config.marker, config.markerRegex) ||
+    if (handled.has(key) || !Core.completionMatches(text, config.marker, config.markerRegex) ||
       sendGuard.alreadySent(text, latestUserTurn().logicalTurn)) return;
     if (Date.now() - stableSince < 1500 || hasStopButton(selectors.stop)) return;
     if (config.completionSelector && !query(config.completionSelector).some(visible)) return;
@@ -395,7 +442,10 @@
       chatGptUserBubbleCount: query('[data-user-message-bubble="true"]').length,
       customAssistantSelector: !!config.assistantSelector,
       markerDetected: !!lastAssistant &&
-        Core.hasMarker(textOf(lastAssistant), config.marker, config.markerRegex),
+        Core.completionMatches(textOf(lastAssistant), config.marker, config.markerRegex),
+      markerDisabled: !config.marker,
+      assistantFollowsLastUser: !!lastAssistant &&
+        followsUser(lastAssistant, latestUserTurn().node),
       markerAlreadySent: !!lastAssistant &&
         sendGuard.alreadySent(textOf(lastAssistant), latestUserTurn().logicalTurn),
       logicalUserTurnDetected: !!latestUserTurn().logicalTurn,

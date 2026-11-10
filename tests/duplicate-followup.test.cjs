@@ -507,12 +507,20 @@ test("persisted cooldown suppresses all completion checks, scheduling and edits"
   assert.equal(chat.clicks(), 0);
   assert.equal(chat.sentRuntimeMessages.filter(x => x === "CLAIM_SEND").length, 0);
   await chat.advance(1000); // Global cooldown expires.
-  chat.poll(); // Readies the completion stability check.
+  chat.poll(); // This reply existed DURING lockout: it is acknowledged only.
   await chat.advance(1600);
   chat.poll();
   await chat.advance(5000);
   await chat.advance(250);
-  assert.equal(chat.clicks(), 1);
+  assert.equal(chat.clicks(), 0, "old replies from cooldown must never catch up");
+  chat.nextUser();
+  chat.nextAssistant();
+  chat.poll();
+  await chat.advance(1600);
+  chat.poll();
+  await chat.advance(5000);
+  await chat.advance(250);
+  assert.equal(chat.clicks(), 1, "a NEW reply after cooldown can send");
 });
 
 test("persistent cooldown prevents completion timers even after local content reinit", async () => {

@@ -45,6 +45,8 @@ function createChat(variant, userOwnsMarker = false) {
   const document = {
     documentElement: {},
     body: root,
+    addEventListener() {},
+    removeEventListener() {},
     querySelector: (s) => s === "main" ? root : null,
     querySelectorAll(selector) {
       // The generic fallback first asks for a user bubble.

@@ -26,7 +26,7 @@ test("a short first assistant reply after enabling an empty chat is submitted", 
     location: { hostname: "chatgpt.com", href: "https://chatgpt.com/c/test" },
     Event: class { constructor(type, options) { this.type = type; this.bubbles = options?.bubbles; } },
     MutationObserver: class { observe() {} },
-    document: { documentElement: {}, querySelectorAll(selector) {
+    document: { documentElement: {}, addEventListener() {}, removeEventListener() {}, querySelectorAll(selector) {
       if (selector.includes('data-message-author-role="assistant"')) return assistant ? [assistant] : [];
       if (selector.includes("pending-conversation-input")) return [editor];
       if (selector.includes("aria-label=\"Отправить\"")) return [sendButton];

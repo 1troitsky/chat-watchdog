@@ -289,9 +289,11 @@
       matches.push({ node: target, signature, phrase: matched });
     }
     const lastReply = latestAssistant(currentSelectors().assistant).node;
+    let assistantErrorActive = false;
     if (lastReply && visible(lastReply) && !isWatchdogUi(lastReply)) {
       const phrase = Core.findErrorLine(textOf(lastReply), config.errorWords);
       if (phrase) {
+        assistantErrorActive = true;
         // This is a logical alert attached to a user turn, not a DOM node.
         // React can replace the assistant element repeatedly without a new
         // reply; that must never restart the alarm after dismissal.
@@ -321,7 +323,7 @@
         chrome.runtime.sendMessage({ type: "PLAY_ERROR" }).catch(() => {});
       }
     }
-    return matches.length > 0;
+    return assistantErrorActive || matches.length > 0;
   }
 
   // A bounded per-tab event journal. No transcript text is stored.

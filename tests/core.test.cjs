@@ -16,6 +16,19 @@ test("only matches marker at the end", () => {
   assert.equal(Core.hasMarker("Answer\n!!!ГОТОВО!!!", "!!!ГОТОВО!!!"), true);
   assert.equal(Core.hasMarker("!!!ГОТОВО!!!\nStill working", "!!!ГОТОВО!!!"), false);
 });
+test("literal completion marker matches at the start OR end, never the middle", () => {
+  assert.equal(Core.hasMarker("!!!ГОТОВО!!!\nПодробный отчёт", "!!!ГОТОВО!!!"), true);
+  assert.equal(Core.hasMarker("Подробный отчёт\n!!!ГОТОВО!!!", "!!!ГОТОВО!!!"), true);
+  assert.equal(Core.hasMarker("Отчёт\n!!!ГОТОВО!!!\nВажное продолжение", "!!!ГОТОВО!!!"), false);
+});
+
+test("Regex respects start and end of the entire reply", () => {
+  assert.equal(Core.hasMarker("!!!ГОТОВО!!!\nПодробный отчёт", "/!!!ГОТОВО!!!/i", true), true);
+  assert.equal(Core.hasMarker("Подробный отчёт\n!!!ГОТОВО!!!", "/!!!ГОТОВО!!!/i", true), true);
+  assert.equal(Core.hasMarker("Подробный отчёт\n!!!ГОТОВО!!!\nВажное продолжение", "/!!!ГОТОВО!!!/i", true), false);
+  assert.equal(Core.hasMarker("Отчёт\n!!!ГОТОВО!!!\nТекст", "/!!!ГОТОВО!!!/im", true), false);
+});
+
 test("regex mode recognizes both development report endings and an explicit marker", () => {
   const pattern = "(?:!!!ГОТОВО!!!|Следующий (?:этап|участок)[\\s\\S]{0,400})$";
   const first = "CI 3/3 PASS\nСледующий этап P1 — версии MediaFile и интеграция видео/аудио с заданиями и разрешениями доступа.";
@@ -29,7 +42,8 @@ test("regex /pattern/i uses flags and anchors all alternatives", () => {
   assert.equal(Core.hasMarker("ГОТОВО!", "/готово!/i", true), true);
   assert.equal(Core.hasMarker("ГОТОВО! но дальше ещё текст", "/готово!/i", true), false);
   assert.equal(Core.hasMarker("hello more text", "hello|text", true), true);
-  assert.equal(Core.hasMarker("hello more text still going", "hello|text", true), false);
+  assert.equal(Core.hasMarker("hello more text still going", "hello|text", true), true);
+  assert.equal(Core.hasMarker("somewhere hello more text still going", "hello|text", true), false);
 });
 test("invalid patterns are ignored and plain text remains compatible", () => {
   assert.throws(() => Core.compileMarker("("), SyntaxError);

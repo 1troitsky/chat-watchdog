@@ -17,6 +17,7 @@ function createHarness(options = {}) {
   let poll;
   let messageListener;
   const sentRuntimeMessages = [];
+  const claims = options.claims || new Set();
   let errorVisible = false;
   let userMessages = [userNode("Ну давай пиши готово")];
   let sendAvailable = true;
@@ -122,9 +123,15 @@ function createHarness(options = {}) {
       onMessage: { addListener(fn) { messageListener = fn; } },
       sendMessage: async (msg) => {
         sentRuntimeMessages.push(msg.type);
+        if (msg.type === "CLAIM_SEND") {
+          if (claims.has(msg.token)) return { ok: false, reason: "duplicate" };
+          claims.add(msg.token);
+          return { ok: true };
+        }
         return msg.type === "GET_CONFIG" ? {
         enabled: true,
         mode: options.mode || "auto",
+        markerRegex: options.markerRegex === true,
         marker: options.marker !== undefined ? options.marker : "!!!ГОТОВО!!!",
         reply: "Ок, продолжаем",
         delaySeconds: 5
@@ -190,6 +197,53 @@ function createHarness(options = {}) {
     stopClicks: () => stopClicks
   };
 }
+
+test("two content-script instances must not click Send for the same answer", async () => {
+  const claims = new Set();
+  const first = createHarness({ claims });
+  const second = createHarness({ claims });
+  await first.baseline();
+  await second.baseline();
+  await first.advance(1600);
+  await second.advance(1600);
+  first.poll();
+  second.poll();
+  await first.advance(5000);
+  await second.advance(5000);
+  await first.advance(250);
+  await second.advance(250);
+  assert.equal(first.clicks() + second.clicks(), 1);
+  assert.equal(claims.size, 1);
+});
+
+test("a marker at the very beginning of the answer triggers exactly one Send", async () => {
+  const chat = createHarness({ replyText: "!!!ГОТОВО!!!\nОтчёт о проверке." });
+  await chat.sendFirst();
+  await chat.advance(90000);
+  chat.poll();
+  assert.equal(chat.clicks(), 1);
+});
+
+test("a Regex match at the start also triggers a single Send", async () => {
+  const chat = createHarness({
+    marker: "/!!!ГОТОВО!!!/i", markerRegex: true,
+    replyText: "!!!ГОТОВО!!!\nОтчёт о проверке."
+  });
+  await chat.sendFirst();
+  await chat.advance(90000);
+  chat.poll();
+  assert.equal(chat.clicks(), 1);
+});
+
+test("a marker in the middle of an answer must never send", async () => {
+  const chat = createHarness({ replyText: "Отчёт\n!!!ГОТОВО!!!\nЕщё текст." });
+  await chat.baseline();
+  await chat.advance(1600);
+  chat.poll();
+  await chat.advance(60000);
+  chat.poll();
+  assert.equal(chat.clicks(), 0);
+});
 
 test("error-only mode never schedules or sends even when marker is present", async () => {
   const chat = createHarness({ mode: "errors" });

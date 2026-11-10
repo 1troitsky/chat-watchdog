@@ -22,6 +22,15 @@ test("detects Russian and English error phrases", () => {
   assert.equal(Core.findError("NETWORK ERROR: retry", words), "Network error");
   assert.equal(Core.findError("No issue", words), null);
 });
+test("notifies once per continuous error, even after dismissal", () => {
+  const tracker = Core.createErrorTracker();
+  assert.equal(tracker.observe("Error:Network error"), true);
+  assert.equal(tracker.observe("Error:Network error"), false);
+  assert.equal(tracker.observe("Error:Network error"), false);
+  assert.equal(tracker.observe(null), false);
+  assert.equal(tracker.observe("Error:Network error"), true);
+  assert.equal(tracker.observe("Error:Rate limit"), true);
+});
 test("uses different selectors for different assistants", () => {
   assert.match(Core.selectorsFor("chatgpt.com").assistant, /data-message-author-role/);
   assert.match(Core.selectorsFor("claude.ai").assistant, /claude-message/);

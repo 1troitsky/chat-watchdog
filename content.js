@@ -12,8 +12,9 @@
   let pending = null;
   let debounce = null;
   let handled = new Set();
-  let lastError = "";
-  let lastErrorAt = 0;
+  const errorTracker = Core.createErrorTracker();
+  let dialogRoot = null;
+  let dialogError = null;
 
   function query(selector) {
     if (!selector) return [];
@@ -59,21 +60,110 @@
     return query(selector).some(visible);
   }
 
+  function closeDialog() {
+    if (dialogRoot) {
+      dialogRoot.remove();
+      dialogRoot = null;
+      dialogError = null;
+    }
+    document.removeEventListener("keydown", handleDialogKeydown, true);
+    chrome.runtime.sendMessage({ type: "STOP_ERROR" }).catch(() => {});
+  }
+
+  function handleDialogKeydown(event) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeDialog();
+    }
+  }
+
+  function showDialog(message) {
+    if (dialogRoot) {
+      dialogError.textContent = message;
+      return;
+    }
+    const host = document.createElement("div");
+    host.id = "chat-watchdog-alert-host";
+    host.style.cssText = "position:fixed;inset:0;z-index:2147483647;";
+    const shadow = host.attachShadow({ mode: "open" });
+    shadow.innerHTML = `
+      <style>
+        * { box-sizing: border-box; }
+        .veil {
+          position: fixed; inset: 0; display: flex; align-items: center;
+          justify-content: center; padding: 20px; background: #0008;
+          font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          color: #222;
+        }
+        .panel {
+          position: relative; width: min(100%, 390px); padding: 25px;
+          border-radius: 14px; background: #fff; box-shadow: 0 20px 80px #0004;
+          text-align: left;
+        }
+        h2 { margin: 0 35px 12px 0; font-size: 19px; line-height: 1.3; font-weight: 650; }
+        p { margin: 0 0 20px; overflow-wrap: anywhere; color: #555; }
+        button { cursor: pointer; font: inherit; }
+        .dismiss {
+          display: block; width: 100%; border: 0; padding: 11px 14px;
+          border-radius: 8px; color: #fff; background: #222; font-weight: 600;
+        }
+        .dismiss:hover { background: #444; }
+        .close {
+          position: absolute; right: 13px; top: 11px; border: 0;
+          background: transparent; border-radius: 6px; padding: 5px 10px;
+          color: #666; font-size: 21px;
+        }
+        button:focus-visible { outline: 3px solid #888; outline-offset: 3px; }
+      </style>
+      <div class="veil">
+        <section class="panel" role="alertdialog" aria-modal="true"
+          aria-labelledby="watchdog-title" aria-describedby="watchdog-error">
+          <button class="close" type="button" aria-label="Закрыть">×</button>
+          <h2 id="watchdog-title">Chatbot Mistake</h2>
+          <p id="watchdog-error"></p>
+          <button class="dismiss" type="button">Закрыть и остановить звук</button>
+        </section>
+      </div>
+    `;
+    dialogError = shadow.getElementById("watchdog-error");
+    dialogError.textContent = "Обнаружена ошибка: " + message;
+    shadow.querySelectorAll("button").forEach((button) => {
+      button.addEventListener("click", closeDialog);
+    });
+    dialogRoot = host;
+    (document.body || document.documentElement).appendChild(host);
+    document.addEventListener("keydown", handleDialogKeydown, true);
+    shadow.querySelector(".dismiss").focus();
+  }
+
   function checkError() {
     const selector = config.errorSelector ||
       '[role="alert"], [role="status"], [data-sonner-toast], [data-testid*="error"], .toast, .error-banner';
+    let signature = null;
+    let matchedPhrase = null;
     for (const node of query(selector)) {
       if (!visible(node)) continue;
       const text = textOf(node).slice(0, 500);
       const matched = Core.findError(text, config.errorWords);
       if (!matched) continue;
-      const signature = matched + ":" + text;
-      if (signature === lastError && Date.now() - lastErrorAt < 60000) continue;
-      lastError = signature;
-      lastErrorAt = Date.now();
-      chrome.runtime.sendMessage({ type: "PLAY_ERROR" }).catch(() => {});
+      matchedPhrase = matched;
+      signature = matched + ":" + text;
       break;
     }
+    if (!signature) {
+      errorTracker.observe(null);
+      return false;
+    }
+    if (errorTracker.observe(signature)) {
+      if (dialogRoot) {
+        dialogError.textContent = "Обнаружена ошибка: " + matchedPhrase;
+      } else {
+        showDialog(matchedPhrase);
+        chrome.runtime.sendMessage({ type: "PLAY_ERROR" }).catch(() => {});
+      }
+    }
+    return true;
   }
 
   function cancelPending() {
@@ -138,13 +228,18 @@
   function check() {
     if (!config.enabled) return;
     if (route !== location.href) {
+      closeDialog();
+      errorTracker.observe(null);
       route = location.href;
       seenInitial = false;
       lastKey = "";
       handled = new Set();
       cancelPending();
     }
-    checkError();
+    if (checkError()) {
+      cancelPending();
+      return;
+    }
     const selectors = currentSelectors();
     const result = latestAssistant(selectors.assistant);
     if (!result.node) return;
@@ -182,11 +277,16 @@
     if (!message || message.type !== "WATCHDOG_CONFIG") return;
     const wasEnabled = config.enabled;
     config = Core.normalize(message.config);
-    if (!config.enabled) cancelPending();
+    if (!config.enabled) {
+      cancelPending();
+      errorTracker.observe(null);
+      closeDialog();
+    }
     if (!wasEnabled && config.enabled) {
       route = location.href;
       seenInitial = false;
       handled = new Set();
+      errorTracker.observe(null);
     }
     scheduleCheck();
   });

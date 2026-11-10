@@ -70,6 +70,7 @@
         await chrome.tabs.sendMessage(tab.id, { type: "WATCHDOG_CONFIG", config });
         status("Включено только в этой вкладке");
       } else {
+        await chrome.runtime.sendMessage({ type: "STOP_TAB_AUDIO", tabId: tab.id });
         status("Выключено");
       }
     } catch (error) {

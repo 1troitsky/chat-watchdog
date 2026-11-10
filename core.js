@@ -89,7 +89,23 @@
     return common;
   }
 
-  const api = { DEFAULTS, normalize, hasMarker, findError, selectorsFor };
+  // One alert per continuous visible error. Re-arm only after the error disappears.
+  function createErrorTracker() {
+    let signature = null;
+    return {
+      observe(next) {
+        if (!next) {
+          signature = null;
+          return false;
+        }
+        if (next === signature) return false;
+        signature = next;
+        return true;
+      }
+    };
+  }
+
+  const api = { DEFAULTS, normalize, hasMarker, findError, selectorsFor, createErrorTracker };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.ChatWatchdogCore = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

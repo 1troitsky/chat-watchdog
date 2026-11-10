@@ -70,6 +70,9 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }) {
   async function arm(token, tabId = 7, url = "https://chatgpt.com/c/a", assistantOrdinal = 1) {
     return request({ type: "ARM_SEND", token, assistantOrdinal }, tabId, url);
   }
+  async function cancel(armId, tabId = 7, url = "https://chatgpt.com/c/a") {
+    return request({ type: "CANCEL_ARM", armId }, tabId, url);
+  }
   async function rawClaim(token, tabId = 7, url = "https://chatgpt.com/c/a",
       assistantOrdinal = 1, armId) {
     return request({ type: "CLAIM_SEND", token, assistantOrdinal, armId }, tabId, url);
@@ -91,7 +94,7 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }) {
       enabled: true, mode: "auto", origin: "https://chatgpt.com", ...overrides
     });
   }
-  return { claim, rawClaim, arm, clicked, userTurn, state, configure, saved, clock,
+  return { claim, rawClaim, arm, cancel, clicked, userTurn, state, configure, saved, clock,
     get onUpdated() { return onUpdated; }, get onRemoved() { return onRemoved; } };
 }
 
@@ -297,4 +300,57 @@ test("two tabs cannot both arm the same conversation, but different chats can", 
   ]);
   assert.equal(same.filter(e => e.ok).length, 1);
   assert.equal((await app.arm("reply-1", 8, "https://chatgpt.com/c/b", 1)).ok, true);
+});
+
+
+test("an arm capability cannot be claimed from another tab or with a forged identifier", async () => {
+  const app = createWorker();
+  app.configure(7);
+  app.configure(8);
+  const armed = await app.arm("answer", 7, "https://chatgpt.com/c/a", 3);
+  app.clock.now = armed.dueAt;
+  assert.equal((await app.rawClaim("answer", 7, "https://chatgpt.com/c/a", 3, "forged")).reason, "unarmed");
+  assert.equal((await app.rawClaim("answer", 8, "https://chatgpt.com/c/a", 3, armed.armId)).reason, "unarmed");
+  assert.equal((await app.rawClaim("answer", 7, "https://chatgpt.com/c/a", 3, armed.armId)).ok, true);
+});
+
+test("armed deadlines survive background worker restarts without legacy bypass", async () => {
+  const saved = new Map();
+  const clock = { now: 1000000 };
+  const oldWorker = createWorker(saved, clock);
+  oldWorker.configure(7, { delaySeconds: 30 });
+  const armed = await oldWorker.arm("answer");
+  const restarted = createWorker(saved, clock);
+  assert.equal((await restarted.rawClaim("answer")).reason, "unarmed");
+  clock.now = armed.dueAt - 1;
+  assert.equal((await restarted.rawClaim("answer", 7, "https://chatgpt.com/c/a", 1, armed.armId)).reason,
+    "too-early");
+  clock.now++;
+  assert.equal((await restarted.rawClaim("answer", 7, "https://chatgpt.com/c/a", 1, armed.armId)).ok,
+    true);
+});
+
+test("cancel revokes the exact arm; a stale cancellation cannot revoke a newer one", async () => {
+  const app = createWorker();
+  app.configure(7);
+  const first = await app.arm("old-answer");
+  assert.equal((await app.cancel(first.armId)).ok, true);
+  const next = await app.arm("new-answer", 7, "https://chatgpt.com/c/a", 2);
+  assert.equal(next.ok, true);
+  assert.equal((await app.cancel(first.armId)).ok, false);
+  app.clock.now = next.dueAt;
+  assert.equal((await app.rawClaim("old-answer", 7, "https://chatgpt.com/c/a", 1, first.armId)).reason,
+    "unarmed");
+  assert.equal((await app.rawClaim("new-answer", 7, "https://chatgpt.com/c/a", 2, next.armId)).ok,
+    true);
+});
+
+test("mode switched off after arming cannot claim even after the deadline", async () => {
+  const app = createWorker();
+  app.configure(7);
+  const armed = await app.arm("answer");
+  app.configure(7, { mode: "errors" });
+  app.clock.now = armed.dueAt;
+  assert.equal((await app.rawClaim("answer", 7, "https://chatgpt.com/c/a", 1, armed.armId)).reason,
+    "inactive");
 });

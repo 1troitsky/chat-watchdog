@@ -144,7 +144,7 @@ async function claimSend(tabId, token, assistantOrdinal, armId, sender) {
     const keys = [key(tabId), scope, armedKey];
     const items = await chrome.storage.session.get(keys);
     const config = items[key(tabId)];
-    if (!config || config.enabled !== true || config.mode === "errors" ||
+    if (!config || config.enabled !== true || config.mode !== "auto" ||
         !sender.tab?.url || new URL(sender.tab.url).origin !== config.origin) {
       return { ok: false, reason: "inactive" };
     }

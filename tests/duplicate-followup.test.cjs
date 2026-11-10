@@ -15,12 +15,13 @@ function createHarness() {
   let clicks = 0;
   let response = null;
   let poll;
-  let latestUser = userNode();
+  let userMessages = [userNode("Ну давай пиши готово")];
   let sendAvailable = true;
   const jobs = new Map();
 
-  function userNode() {
+  function userNode(text) {
     return {
+      innerText: text,
       getClientRects: () => [1],
       compareDocumentPosition(other) {
         return other === response ? 4 : 2;
@@ -62,7 +63,7 @@ function createHarness() {
       return true;
     },
     querySelectorAll(selector) {
-      if (selector.startsWith('[data-user-message-bubble="true"]')) return [latestUser];
+      if (selector === '[data-user-message-bubble="true"]') return userMessages;
       if (selector.includes('[contenteditable="true"][role="textbox"]')) return [editor];
       if (selector.includes('aria-label="Отправить"')) return [send];
       if (selector.includes('[data-message-author-role="assistant"]')) {
@@ -132,8 +133,12 @@ function createHarness() {
   return {
     advance, baseline, poll, sendFirst,
     clicks: () => clicks,
-    nextUser() { latestUser = userNode(); },
+    nextUser() { userMessages.push(userNode("Ок, продолжаем")); },
     nextAssistant() { response = assistantNode(); },
+    rerenderOldTurn() {
+      userMessages = userMessages.map(item => userNode(item.innerText));
+      response = assistantNode();
+    },
     enableSend(enabled) { sendAvailable = enabled; }
   };
 }
@@ -142,6 +147,18 @@ test("a React rerender of a submitted marker cannot send a second follow-up", as
   const chat = createHarness();
   await chat.sendFirst();
   // This is the actual v0.1.7 bug: same marker, new HTML element.
+  chat.poll();
+  await chat.advance(1600);
+  chat.poll();
+  await chat.advance(5000);
+  await chat.advance(250);
+  assert.equal(chat.clicks(), 1);
+});
+
+test("real duplicate: React rerenders BOTH user and assistant DOM nodes", async () => {
+  const chat = createHarness();
+  await chat.sendFirst();
+  chat.rerenderOldTurn(); // No new user turn was sent.
   chat.poll();
   await chat.advance(1600);
   chat.poll();

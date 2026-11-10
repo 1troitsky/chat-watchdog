@@ -26,7 +26,7 @@ For any local MP3 file, use the **file picker**. A file:// URL alone is not perm
 
 - The extension is **OFF by default**. Enabling skips an already-completed assistant response to avoid replaying old tasks; a new conversation with no responses is armed immediately, including for a very short first response.
 - It never overwrites a nonempty input draft.
-- After sending a follow-up, it remembers the acknowledged reply text and will not submit that same reply again due to SPA re-rendering or DOM node replacement. Identical replies to a later user turn can still trigger independently when the DOM confirms they follow that turn.
+- After sending a follow-up, it remembers the logical user turn, based on the visible user-message ordinal and normalized text rather than HTML node identity. It will not send twice if the SPA rerenders both the user message and the assistant reply. A genuinely new user turn can still trigger its own continuation. When no reliable user turn can be located, repeated identical replies are conservatively ignored.
 - It uses UI automation, not the AI provider's API, and does not guarantee that a response is correct or that a task has truly completed.
 - Completion is detected by plain text or an end-anchored Regex at the **end of the last assistant message**, stable text, an absent stop button, and optionally a user-provided completion element.
 - Errors are detected in toast/alert/status elements, not every mention of error words inside chat history.

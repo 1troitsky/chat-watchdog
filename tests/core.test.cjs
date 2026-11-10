@@ -115,38 +115,30 @@ test("ChatGPT selector supports 2026 search-unit and turn-key markup, keeping ol
   assert.match(selector, /data-user-message-bubble/);
   assert.match(Core.selectorsFor("claude.ai").assistant, /claude-message/);
 });
-test("the same completed reply cannot send twice after a DOM rerender", () => {
-  const guard = Core.createSendGuard();
-  const user = {};
-  const firstAssistant = {};
-  const rerenderedAssistant = {};
-  assert.equal(guard.alreadySent("!!!ГОТОВО!!!", user, firstAssistant), false);
-  guard.record("!!!ГОТОВО!!!", user);
-  assert.equal(guard.alreadySent("!!!ГОТОВО!!!", user, firstAssistant), true);
-  assert.equal(guard.alreadySent("!!!ГОТОВО!!!", user, rerenderedAssistant), true);
-  assert.equal(guard.alreadySent("Новый отчет !!!ГОТОВО!!!", user, rerenderedAssistant), false);
+test("logical user turn fingerprint survives React node replacement", () => {
+  assert.equal(Core.userTurnFingerprint(2, "  Давай   дальше "), Core.userTurnFingerprint(2, "Давай дальше"));
+  assert.notEqual(Core.userTurnFingerprint(2, "Давай дальше"), Core.userTurnFingerprint(3, "Давай дальше"));
+  assert.notEqual(Core.userTurnFingerprint(2, "Давай дальше"), Core.userTurnFingerprint(2, "Другая задача"));
 });
 
-test("a new matching reply may send after a new user turn", () => {
+test("re-rendering both the assistant and the user cannot re-arm the old marker", () => {
   const guard = Core.createSendGuard();
-  const oldUser = {};
-  const newUser = { compareDocumentPosition(other) {
-    return other === newAssistant ? 4 : 2;
-  } };
-  const oldAssistant = {};
-  const newAssistant = {};
-  guard.record("!!!ГОТОВО!!!", oldUser);
-  assert.equal(guard.alreadySent("!!!ГОТОВО!!!", newUser, oldAssistant), true);
-  assert.equal(guard.alreadySent("!!!ГОТОВО!!!", newUser, newAssistant), false);
-  guard.record("!!!ГОТОВО!!!", newUser);
-  assert.equal(guard.alreadySent("!!!ГОТОВО!!!", newUser, newAssistant), true);
+  const oldTurn = Core.userTurnFingerprint(1, "Ну давай пиши готово");
+  assert.equal(guard.alreadySent("!!!ГОТОВО!!!", oldTurn), false);
+  guard.record("!!!ГОТОВО!!!", oldTurn);
+  assert.equal(guard.alreadySent("!!!ГОТОВО!!!", oldTurn), true);
+  assert.equal(guard.alreadySent("Работа завершена !!!ГОТОВО!!!", oldTurn), true);
 });
 
-test("without proof of a new user/reply, duplicate auto-send stays blocked", () => {
+test("new user turn can send identical marker, but unknown turns fail closed", () => {
   const guard = Core.createSendGuard();
-  guard.record("!!!ГОТОВО!!!", null);
-  assert.equal(guard.alreadySent("!!!ГОТОВО!!!", null, {}), true);
-  assert.equal(guard.alreadySent("!!!ГОТОВО!!!", {}, {}), true);
+  const first = Core.userTurnFingerprint(1, "Ну давай пиши готово");
+  const second = Core.userTurnFingerprint(2, "Ок, продолжаем");
+  guard.record("!!!ГОТОВО!!!", first);
+  assert.equal(guard.alreadySent("!!!ГОТОВО!!!", second), false);
+  guard.record("!!!ГОТОВО!!!", second);
+  assert.equal(guard.alreadySent("!!!ГОТОВО!!!", second), true);
+  assert.equal(guard.alreadySent("!!!ГОТОВО!!!", null), true);
 });
 
 test("uses different selectors for different assistants", () => {

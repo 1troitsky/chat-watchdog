@@ -168,30 +168,39 @@
     };
   }
 
-  // Prevent a completed marker from being submitted twice when React/SPA
-  // recreates the same assistant message or changes its DOM wrapper.
-  // Re-arm identical assistant text only after a NEW user turn followed by
-  // a NEW assistant reply; never treat rerendering as a new answer.
+  // Key sends to the logical user turn, not DOM node identity. React may
+  // replace BOTH user and assistant nodes without adding a new chat turn.
+  function userTurnFingerprint(count, text) {
+    const normalized = String(text || "").trim().replace(/\s+/g, " ");
+    let hash = 2166136261;
+    for (let i = 0; i < normalized.length; i++) {
+      hash ^= normalized.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return String(count) + ":" + normalized.length + ":" + (hash >>> 0).toString(16);
+  }
+
   function createSendGuard() {
     let sent = null;
     return {
-      alreadySent(text, latestUser, latestAssistant) {
-        if (!sent || sent.text !== text) return false;
-        if (!latestUser || latestUser === sent.user) return true;
-        if (typeof latestUser.compareDocumentPosition !== "function") return true;
-        // A new assistant reply must come after the new user message.
-        return !(latestUser.compareDocumentPosition(latestAssistant) & 4);
+      alreadySent(text, logicalTurn) {
+        if (!sent) return false;
+        // When the user turn is identifiable, block all repeated submissions
+        // for that turn even if assistant text changes slightly.
+        if (logicalTurn && sent.logicalTurn) {
+          return sent.logicalTurn === logicalTurn;
+        }
+        // Other supported chat UIs may not expose reliable user turns.
+        // Fail closed for identical response text in those cases.
+        return sent.text === text;
       },
-      record(text, latestUser) {
-        sent = { text, user: latestUser || null };
-      },
-      status(text, latestUser, latestAssistant) {
-        return this.alreadySent(text, latestUser, latestAssistant);
+      record(text, logicalTurn) {
+        sent = { text, logicalTurn: logicalTurn || null };
       }
     };
   }
 
-  const api = { DEFAULTS, normalize, compileMarker, hasMarker, findError, selectorsFor, createErrorTracker, createSendGuard };
+  const api = { DEFAULTS, normalize, compileMarker, hasMarker, findError, selectorsFor, createErrorTracker, createSendGuard, userTurnFingerprint };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.ChatWatchdogCore = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

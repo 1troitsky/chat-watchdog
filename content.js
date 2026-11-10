@@ -16,6 +16,7 @@
   const sendGuard = Core.createSendGuard();
   let dialogRoot = null;
   let dialogError = null;
+  let sendClicks = 0;
 
   function query(selector) {
     if (!selector) return [];
@@ -48,15 +49,32 @@
   }
 
   // The current app-shell has multiple account-dependent DOM variants.
-  // If neither traditional roles nor search-unit keys are present, we can
-  // locate a marker in the rendered chat *after the latest user bubble*.
-  // Without proof of which content belongs to the assistant, fail closed.
+  // Choose a single user-bubble scheme instead of counting nested aliases.
+  // A React rerender can change the node but not the visible turn text or its
+  // ordinal, so this is a stable local identifier for duplicate prevention.
+  function latestUserTurn() {
+    const schemes = [
+      '[data-user-message-bubble="true"]',
+      '[data-message-author-role="user"]',
+      '[data-content-search-unit-key$=":user"]'
+    ];
+    for (const selector of schemes) {
+      const nodes = query(selector).filter(visible);
+      if (!nodes.length) continue;
+      const node = nodes[nodes.length - 1];
+      return {
+        node,
+        logicalTurn: Core.userTurnFingerprint(nodes.length, textOf(node))
+      };
+    }
+    return { node: null, logicalTurn: null };
+  }
+
+  // If neither traditional roles nor search-unit keys are present, locate
+  // a marker in rendered chat content AFTER the latest user bubble.
   function markerAfterLastUser() {
     if (!isChatGPT() || typeof document.querySelector !== "function") return [];
-    const users = query(
-      '[data-user-message-bubble="true"], [data-content-search-unit-key$=":user"], [data-message-author-role="user"]'
-    ).filter(visible);
-    const lastUser = users[users.length - 1];
+    const lastUser = latestUserTurn().node;
     if (!lastUser || typeof lastUser.compareDocumentPosition !== "function") return [];
     const root = document.querySelector("main") ||
       document.querySelector('[role="main"]') || document.body;
@@ -75,13 +93,6 @@
       // Bit 4 (DOCUMENT_POSITION_FOLLOWING): assistant text follows user.
       return !!(lastUser.compareDocumentPosition(node) & 4);
     });
-  }
-
-  function latestUserNode() {
-    const nodes = query(
-      '[data-user-message-bubble="true"], [data-message-author-role="user"], [data-content-search-unit-key$=":user"]'
-    ).filter(visible);
-    return nodes[nodes.length - 1] || null;
   }
 
   function assistantElements(selector) {
@@ -287,7 +298,7 @@
     const key = messageKey(result.node, result.count, text);
     if (key !== expectedKey || !Core.hasMarker(text, config.marker, config.markerRegex) ||
       hasStopButton(selectors.stop) ||
-      sendGuard.alreadySent(text, latestUserNode(), result.node)) return;
+      sendGuard.alreadySent(text, latestUserTurn().logicalTurn)) return;
     if (config.completionSelector && !query(config.completionSelector).some(visible)) return;
     const editor = findEditor(selectors.editor);
     if (!editor || editorText(editor)) return; // Never overwrite a human's draft.
@@ -300,11 +311,12 @@
       if (editorText(editor) !== config.reply) return;
       const button = findSendButton(selectors.send);
       if (button) {
-        if (sendGuard.alreadySent(text, latestUserNode(), result.node)) return;
+        if (sendGuard.alreadySent(text, latestUserTurn().logicalTurn)) return;
         // Record before submitting, because the chat can immediately rerender
         // or reset the composer and expose the same marker under a new node.
-        sendGuard.record(text, latestUserNode());
+        sendGuard.record(text, latestUserTurn().logicalTurn);
         handled.add(expectedKey);
+        sendClicks++;
         button.click();
         return;
       }
@@ -349,7 +361,7 @@
       return;
     }
     if (handled.has(key) || !Core.hasMarker(text, config.marker, config.markerRegex) ||
-      sendGuard.alreadySent(text, latestUserNode(), result.node)) return;
+      sendGuard.alreadySent(text, latestUserTurn().logicalTurn)) return;
     if (Date.now() - stableSince < 1500 || hasStopButton(selectors.stop)) return;
     if (config.completionSelector && !query(config.completionSelector).some(visible)) return;
     if (pending && pending.key === key) return;
@@ -385,7 +397,9 @@
       markerDetected: !!lastAssistant &&
         Core.hasMarker(textOf(lastAssistant), config.marker, config.markerRegex),
       markerAlreadySent: !!lastAssistant &&
-        sendGuard.alreadySent(textOf(lastAssistant), latestUserNode(), lastAssistant),
+        sendGuard.alreadySent(textOf(lastAssistant), latestUserTurn().logicalTurn),
+      logicalUserTurnDetected: !!latestUserTurn().logicalTurn,
+      sendClicks,
       editorFound: !!editor,
       editorEmpty: !!editor && !editorText(editor),
       sendButtonFound: !!findSendButton(selectors.send),

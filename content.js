@@ -19,6 +19,7 @@
   let sendClicks = 0;
   let lastClickAt = 0;
   let sending = false;
+  let modeEpoch = 0;
   let lastUserTurnAtSend = null;
   const eventLog = [];
   const lastEventSignature = new Map();
@@ -363,6 +364,7 @@
 
   async function sendIfReady(expectedKey) {
     pending = null;
+    const expectedModeEpoch = modeEpoch;
     if (sending || !config.enabled || config.mode !== "auto" || location.href !== route) return;
     const selectors = currentSelectors();
     const result = latestAssistant(selectors.assistant);
@@ -394,7 +396,8 @@
       fillEditor(editor, config.reply);
       for (let attempt = 0; attempt < 10; attempt++) {
         await new Promise(resolve => setTimeout(resolve, 200));
-        if (!config.enabled || config.mode !== "auto" || location.href !== route) return;
+        if (!config.enabled || config.mode !== "auto" ||
+            modeEpoch !== expectedModeEpoch || location.href !== route) return;
         if (editorText(editor) !== config.reply) return;
         // CRITICAL: recheck stop state on EVERY retry and immediately
         // before click. A Stop button must NEVER be mistaken for Send.
@@ -409,7 +412,7 @@
             !Core.completionMatches(textOf(current.node), config.marker, config.markerRegex)) return;
         const button = findSendButton(selectors.send);
         if (!button) continue;
-        if (!config.enabled || config.mode !== "auto" ||
+        if (!config.enabled || config.mode !== "auto" || modeEpoch !== expectedModeEpoch ||
             Core.isStopAction(button) || hasStopButton(selectors.stop)) return;
         const userTurn = latestUserTurn().logicalTurn;
         if (sendGuard.alreadySent(text, userTurn)) return;
@@ -556,6 +559,7 @@
     const previousMode = config.mode;
     config = Core.normalize(message.config);
     if (previousMode !== config.mode) {
+      modeEpoch++;
       cancelPending();
       if (config.enabled) recordEvent("mode", config.mode === "errors" ?
         "Режим: только ошибки — автоотправка отключена" :

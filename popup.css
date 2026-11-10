@@ -5,9 +5,9 @@ header strong { font-size: 16px; }
 small { display: block; margin-top: 3px; color: #717171; font-size: 11px; overflow-wrap: anywhere; }
 main { padding: 14px 16px 16px; max-height: 490px; overflow: auto; }
 label { display: block; margin-bottom: 11px; font-weight: 500; }
-input:not([type="checkbox"]), textarea { display: block; width: 100%; margin-top: 5px; padding: 8px 9px; border: 1px solid #d4d4d4; border-radius: 7px; font: inherit; color: inherit; background: #fff; }
+input:not([type="checkbox"]), textarea, select { display: block; width: 100%; margin-top: 5px; padding: 8px 9px; border: 1px solid #d4d4d4; border-radius: 7px; font: inherit; color: inherit; background: #fff; }
 textarea { resize: vertical; min-height: 42px; }
-input:focus, textarea:focus { outline: 2px solid #a3a3a3; outline-offset: 1px; }
+input:focus, textarea:focus, select:focus { outline: 2px solid #a3a3a3; outline-offset: 1px; }
 input[type="file"] { font-size: 11px; }
 details { margin-top: 15px; padding: 10px 0 0; border-top: 1px solid #ececec; }
 summary { cursor: pointer; font-weight: 600; margin-bottom: 12px; }

@@ -38,7 +38,7 @@
   render();
 
   function markerError() {
-    if (!config.markerRegex || !config.marker.trim()) return "";
+    if (config.mode === "errors" || !config.markerRegex || !config.marker.trim()) return "";
     try {
       ChatWatchdogCore.compileMarker(config.marker);
       return "";

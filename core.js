@@ -9,6 +9,7 @@
     delaySeconds: 5,
     cooldownSeconds: 45,
     toastEnabled: true,
+    errorWordsVersion: 1,
     errorWords: "Соединение прервано\nОшибка соединения\nНет ответа от ChatGPT. Проверьте подключение к интернету\nВы достигли лимита\nВы достигни лимита\nConnection interrupted\nNetwork error\nRate limit reached\n!!!ЕСТЬ ЗАДАНИЕ ДЛЯ АГЕНТА!!!\n!!!ЖДУ РЕШЕНИЕ!!!\n!!!У НАС ПРОБЛЕМА!!!\n!!НУЖНА ЛОКАЛЬНАЯ ПРОВЕРКА!!!",
     assistantSelector: "",
     editorSelector: "",
@@ -19,6 +20,14 @@
     audioName: "",
     origin: ""
   });
+
+  const NEW_ERROR_PHRASES = Object.freeze([
+    "Нет ответа от ChatGPT. Проверьте подключение к интернету",
+    "!!!ЕСТЬ ЗАДАНИЕ ДЛЯ АГЕНТА!!!",
+    "!!!ЖДУ РЕШЕНИЕ!!!",
+    "!!!У НАС ПРОБЛЕМА!!!",
+    "!!НУЖНА ЛОКАЛЬНАЯ ПРОВЕРКА!!!"
+  ]);
 
   function normalize(value) {
     const input = value && typeof value === "object" ? value : {};
@@ -38,6 +47,15 @@
         config[key] = String(config[key] == null ? "" : config[key]);
       }
     }
+    // Upgrade existing tab settings once, without preventing later edits.
+    // The new defaults would otherwise be hidden by saved errorWords strings.
+    if (typeof input.errorWords === "string" && !input.errorWordsVersion) {
+      const present = config.errorWords.split(/\r?\n/).map(s => s.trim());
+      for (const phrase of NEW_ERROR_PHRASES) {
+        if (!present.includes(phrase)) config.errorWords += "\n" + phrase;
+      }
+    }
+    config.errorWordsVersion = 1;
     config.marker = config.marker.trim();
     config.reply = config.reply.trim() || DEFAULTS.reply;
     return config;

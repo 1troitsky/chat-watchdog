@@ -17,6 +17,8 @@ function createHarness() {
   let poll;
   let userMessages = [userNode("Ну давай пиши готово")];
   let sendAvailable = true;
+  let stopVisible = false;
+  let stopClicks = 0;
   const jobs = new Map();
 
   function userNode(text) {
@@ -54,6 +56,11 @@ function createHarness() {
       response = assistantNode(); // ChatGPT re-renders the SAME old answer.
     }
   };
+  const stop = {
+    getClientRects: () => [1],
+    getAttribute(name) { return name === "aria-label" ? "Остановить генерацию" : null; },
+    click() { stopClicks++; }
+  };
   const document = {
     documentElement: {},
     createRange: () => ({ selectNodeContents() {}, collapse() {} }),
@@ -64,6 +71,7 @@ function createHarness() {
     },
     querySelectorAll(selector) {
       if (selector === '[data-user-message-bubble="true"]') return userMessages;
+      if (selector.includes('button[data-testid="stop-button"]')) return stopVisible ? [stop] : [];
       if (selector.includes('[contenteditable="true"][role="textbox"]')) return [editor];
       if (selector.includes('aria-label="Отправить"')) return [send];
       if (selector.includes('[data-message-author-role="assistant"]')) {
@@ -139,7 +147,9 @@ function createHarness() {
       userMessages = userMessages.map(item => userNode(item.innerText));
       response = assistantNode();
     },
-    enableSend(enabled) { sendAvailable = enabled; }
+    enableSend(enabled) { sendAvailable = enabled; },
+    showStop(value) { stopVisible = value; },
+    stopClicks: () => stopClicks
   };
 }
 
@@ -167,7 +177,7 @@ test("real duplicate: React rerenders BOTH user and assistant DOM nodes", async 
   assert.equal(chat.clicks(), 1);
 });
 
-test("an identical marker after a genuinely new user turn remains eligible", async () => {
+test("a new user turn is not sent during cooldown; can send after 45 seconds", async () => {
   const chat = createHarness();
   await chat.sendFirst();
   chat.nextUser();
@@ -177,7 +187,42 @@ test("an identical marker after a genuinely new user turn remains eligible", asy
   chat.poll();
   await chat.advance(5000);
   await chat.advance(250);
+  assert.equal(chat.clicks(), 1); // second turn must respect cooldown
+  await chat.advance(45000);
+  chat.poll();
+  await chat.advance(5000);
+  await chat.advance(250);
   assert.equal(chat.clicks(), 2);
+});
+
+test("a visible Stop control blocks scheduling, then permits Send after generation ends", async () => {
+  const chat = createHarness();
+  await chat.baseline();
+  chat.showStop(true);
+  await chat.advance(1600);
+  chat.poll();
+  await chat.advance(5000);
+  assert.equal(chat.clicks(), 0);
+  assert.equal(chat.stopClicks(), 0);
+  chat.showStop(false);
+  chat.poll();
+  await chat.advance(5000);
+  await chat.advance(250);
+  assert.equal(chat.clicks(), 1);
+  assert.equal(chat.stopClicks(), 0);
+});
+
+test("Stop appearing after editor fill prevents the imminent click", async () => {
+  const chat = createHarness();
+  await chat.baseline();
+  chat.enableSend(false);
+  await chat.advance(1600);
+  chat.poll();
+  await chat.advance(5000);
+  chat.showStop(true);
+  await chat.advance(250);
+  assert.equal(chat.clicks(), 0);
+  assert.equal(chat.stopClicks(), 0);
 });
 
 test("polling while the send button becomes available cannot double-submit", async () => {

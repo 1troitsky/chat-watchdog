@@ -27,7 +27,7 @@ test("a short first assistant reply after enabling an empty chat is submitted", 
     Event: class { constructor(type, options) { this.type = type; this.bubbles = options?.bubbles; } },
     MutationObserver: class { observe() {} },
     document: { documentElement: {}, querySelectorAll(selector) {
-      if (selector.includes("data-message-author-role")) return assistant ? [assistant] : [];
+      if (selector.includes('data-message-author-role="assistant"')) return assistant ? [assistant] : [];
       if (selector.includes("pending-conversation-input")) return [editor];
       if (selector.includes("aria-label=\"Отправить\"")) return [sendButton];
       return [];

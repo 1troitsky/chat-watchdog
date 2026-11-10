@@ -141,6 +141,34 @@ test("new user turn can send identical marker, but unknown turns fail closed", (
   assert.equal(guard.alreadySent("!!!ГОТОВО!!!", null), true);
 });
 
+test("empty completion marker is intentional and not replaced with a default", () => {
+  const config = Core.normalize({ marker: "", markerRegex: true });
+  assert.equal(config.marker, "");
+  assert.equal(Core.completionMatches("A completed reply", config.marker, config.markerRegex), true);
+  assert.equal(Core.completionMatches("   ", config.marker, config.markerRegex), false);
+});
+
+test("upgrading previous session settings adds new alert markers once", () => {
+  const old = Core.normalize({
+    errorWords: "Ошибка соединения",
+    marker: "!!!ГОТОВО!!!"
+  });
+  assert.match(old.errorWords, /!!!ЕСТЬ ЗАДАНИЕ ДЛЯ АГЕНТА!!!/);
+  assert.match(old.errorWords, /!!НУЖНА ЛОКАЛЬНАЯ ПРОВЕРКА!!!/);
+  const next = Core.normalize(old);
+  assert.equal(next.errorWords, old.errorWords);
+  const edited = Core.normalize({ ...next, errorWords: "Моя новая ошибка" });
+  assert.equal(edited.errorWords, "Моя новая ошибка");
+});
+
+test("sensitive Stop controls are never treated as Send buttons", () => {
+  const button = { getAttribute: name =>
+    name === "aria-label" ? "Остановить генерацию" : null };
+  assert.equal(Core.isStopAction(button), true);
+  assert.equal(Core.isStopAction({ getAttribute: name =>
+    name === "aria-label" ? "Отправить" : null }), false);
+});
+
 test("uses different selectors for different assistants", () => {
   assert.match(Core.selectorsFor("chatgpt.com").assistant, /data-message-author-role/);
   assert.match(Core.selectorsFor("chatgpt.com").editor, /pending-conversation-input/);

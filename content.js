@@ -129,33 +129,43 @@
     shadow.querySelector(".close").focus();
   }
 
+  // Prefer the most specific descendant containing the error. Some sites
+  // reuse a single [role="status"] wrapper for successive toast messages.
+  function specificErrorNode(node, phrase) {
+    const needle = phrase.toLocaleLowerCase();
+    let current = node;
+    while (current.children && current.children.length) {
+      const matching = Array.from(current.children).filter((child) =>
+        textOf(child).toLocaleLowerCase().includes(needle));
+      if (matching.length !== 1) break;
+      current = matching[0];
+    }
+    return current;
+  }
+
   function checkError() {
     const selector = config.errorSelector ||
       '[role="alert"], [role="status"], [data-sonner-toast], [data-testid*="error"], .toast, .error-banner';
-    let signature = null;
-    let matchedPhrase = null;
+    const matches = [];
     for (const node of query(selector)) {
       if (!visible(node)) continue;
-      const text = textOf(node).slice(0, 500);
-      const matched = Core.findError(text, config.errorWords);
+      const rawText = textOf(node).slice(0, 1000);
+      const matched = Core.findError(rawText, config.errorWords);
       if (!matched) continue;
-      matchedPhrase = matched;
-      signature = matched + ":" + text;
-      break;
+      const target = specificErrorNode(node, matched);
+      const signature = matched + ":" + textOf(target).slice(0, 500);
+      matches.push({ node: target, signature, phrase: matched });
     }
-    if (!signature) {
-      errorTracker.observe(null);
-      return false;
-    }
-    if (errorTracker.observe(signature)) {
+    const fresh = errorTracker.observe(matches);
+    if (fresh) {
       if (dialogRoot) {
-        dialogError.textContent = "Обнаружена ошибка: " + matchedPhrase;
+        dialogError.textContent = "Обнаружена ошибка: " + fresh.phrase;
       } else {
-        showDialog(matchedPhrase);
+        showDialog(fresh.phrase);
         chrome.runtime.sendMessage({ type: "PLAY_ERROR" }).catch(() => {});
       }
     }
-    return true;
+    return matches.length > 0;
   }
 
   function cancelPending() {
@@ -221,7 +231,7 @@
     if (!config.enabled) return;
     if (route !== location.href) {
       closeDialog();
-      errorTracker.observe(null);
+      errorTracker.reset();
       route = location.href;
       seenInitial = false;
       lastKey = "";
@@ -271,14 +281,14 @@
     config = Core.normalize(message.config);
     if (!config.enabled) {
       cancelPending();
-      errorTracker.observe(null);
+      errorTracker.reset();
       closeDialog();
     }
     if (!wasEnabled && config.enabled) {
       route = location.href;
       seenInitial = false;
       handled = new Set();
-      errorTracker.observe(null);
+      errorTracker.reset();
     }
     scheduleCheck();
   });

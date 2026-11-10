@@ -44,14 +44,36 @@ test("detects Russian and English error phrases", () => {
   assert.equal(Core.findError("NETWORK ERROR: retry", words), "Network error");
   assert.equal(Core.findError("No issue", words), null);
 });
-test("notifies once per continuous error, even after dismissal", () => {
+test("same visible error remains acknowledged after closing the dialog", () => {
   const tracker = Core.createErrorTracker();
-  assert.equal(tracker.observe("Error:Network error"), true);
-  assert.equal(tracker.observe("Error:Network error"), false);
-  assert.equal(tracker.observe("Error:Network error"), false);
-  assert.equal(tracker.observe(null), false);
-  assert.equal(tracker.observe("Error:Network error"), true);
-  assert.equal(tracker.observe("Error:Rate limit"), true);
+  const first = { node: {}, signature: "Ошибка соединения", phrase: "Ошибка соединения" };
+  assert.equal(tracker.observe([first]), first);
+  assert.equal(tracker.observe([first]), null); // repeated polling after dismissal
+  assert.equal(tracker.observe([first]), null);
+});
+
+test("new DOM error with identical text alerts even while the old one remains", () => {
+  const tracker = Core.createErrorTracker();
+  const first = { node: {}, signature: "Ошибка соединения", phrase: "Ошибка соединения" };
+  const second = { node: {}, signature: "Ошибка соединения", phrase: "Ошибка соединения" };
+  assert.equal(tracker.observe([first]), first);
+  assert.equal(tracker.observe([first, second]), second);
+  assert.equal(tracker.observe([first, second]), null);
+  assert.equal(tracker.observe([first]), null); // old error must not re-alert
+});
+
+test("reappearance of the same node and changed errors are new occurrences", () => {
+  const tracker = Core.createErrorTracker();
+  const node = {};
+  const original = { node, signature: "Ошибка соединения", phrase: "Ошибка соединения" };
+  const changed = { node, signature: "Ошибка соединения: попытка 2", phrase: "Ошибка соединения" };
+  assert.equal(tracker.observe([original]), original);
+  assert.equal(tracker.observe([]), null);
+  assert.equal(tracker.observe([original]), original);
+  assert.equal(tracker.observe([changed]), changed);
+  assert.equal(tracker.observe([changed]), null);
+  tracker.reset();
+  assert.equal(tracker.observe([changed]), changed);
 });
 test("uses different selectors for different assistants", () => {
   assert.match(Core.selectorsFor("chatgpt.com").assistant, /data-message-author-role/);

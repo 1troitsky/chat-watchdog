@@ -116,18 +116,28 @@
     return common;
   }
 
-  // One alert per continuous visible error. Re-arm only after the error disappears.
+  // Distinguish individual DOM error instances, not just their text.
+  // Track every visible match so an older error never re-alerts when a newer
+  // one disappears. A dismissed error stays acknowledged while it remains
+  // visible, but replacement/reappearance of the error is a new occurrence.
   function createErrorTracker() {
-    let signature = null;
+    let visibleErrors = new Map();
     return {
-      observe(next) {
-        if (!next) {
-          signature = null;
-          return false;
+      observe(entries) {
+        const current = new Map();
+        let newest = null;
+        for (const entry of entries || []) {
+          if (!entry || !entry.node || !entry.signature) continue;
+          current.set(entry.node, entry.signature);
+          if (visibleErrors.get(entry.node) !== entry.signature) {
+            newest = entry;
+          }
         }
-        if (next === signature) return false;
-        signature = next;
-        return true;
+        visibleErrors = current;
+        return newest;
+      },
+      reset() {
+        visibleErrors.clear();
       }
     };
   }

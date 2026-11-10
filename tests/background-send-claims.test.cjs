@@ -40,10 +40,10 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }) {
     importScripts() {},
     console
   });
-  async function claim(token, tabId = 7, url = "https://chatgpt.com/c/a") {
+  async function claim(token, tabId = 7, url = "https://chatgpt.com/c/a", assistantOrdinal = 1) {
     return new Promise(resolve => {
       const listening = onMessage(
-        { type: "CLAIM_SEND", token },
+        { type: "CLAIM_SEND", token, assistantOrdinal },
         { tab: { id: tabId, url } },
         resolve
       );
@@ -67,7 +67,9 @@ test("one background claim wins even with twenty simultaneous senders", async ()
   );
   assert.equal(responses.filter(result => result.ok).length, 1);
   assert.equal(responses.filter(result => result.reason === "duplicate").length, 19);
-  assert.deepEqual(Array.from(app.saved.get("watchdog:sent:7").tokens), ["chat/a|user:42"]);
+  const conversation = app.saved.get("watchdog:conversation:https://chatgpt.com/c/a");
+  assert.deepEqual(Array.from(conversation.tokens), ["chat/a|user:42"]);
+  assert.equal(conversation.maxAssistantOrdinal, 1);
 });
 
 test("restarting background service worker cannot replay an already claimed turn", async () => {
@@ -78,9 +80,12 @@ test("restarting background service worker cannot replay an already claimed turn
   assert.equal((await first.claim("chat/a|user:42")).ok, true);
   const restarted = createWorker(saved, clock);
   assert.equal((await restarted.claim("chat/a|user:42")).ok, false);
-  assert.equal((await restarted.claim("chat/a|user:43")).reason, "cooldown");
+  assert.equal((await restarted.claim("chat/a|user:43", 7, "https://chatgpt.com/c/a", 1)).reason,
+    "assistant-already-handled");
+  assert.equal((await restarted.claim("chat/a|user:43", 7, "https://chatgpt.com/c/a", 2)).reason,
+    "cooldown");
   clock.now += 46000;
-  assert.equal((await restarted.claim("chat/a|user:43")).ok, true);
+  assert.equal((await restarted.claim("chat/a|user:43", 7, "https://chatgpt.com/c/a", 2)).ok, true);
 });
 
 test("claims are rejected in error-only mode, when OFF, or from the wrong origin", async () => {
@@ -99,24 +104,60 @@ test("global cooldown blocks distinct tokens from multiple observers", async () 
   const app = createWorker();
   app.configure(7, { cooldownSeconds: 45 });
   assert.equal((await app.claim("answer-one")).ok, true);
-  const second = await app.claim("answer-two");
+  const second = await app.claim("answer-two", 7, "https://chatgpt.com/c/a", 2);
   assert.equal(second.reason, "cooldown");
   assert.equal(second.retryAfterSeconds, 45);
   app.clock.now += 44999;
-  assert.equal((await app.claim("answer-two")).reason, "cooldown");
+  assert.equal((await app.claim("answer-two", 7, "https://chatgpt.com/c/a", 2)).reason, "cooldown");
   app.clock.now += 1;
-  assert.equal((await app.claim("answer-two")).ok, true);
+  assert.equal((await app.claim("answer-two", 7, "https://chatgpt.com/c/a", 2)).ok, true);
   app.clock.now += 90000;
   assert.equal((await app.claim("answer-one")).reason, "duplicate");
 });
 
-test("tab A and tab B have independent claims", async () => {
+test("tab A and tab B have independent conversations", async () => {
   const app = createWorker();
   app.configure(7);
   app.configure(8);
   const [first, second] = await Promise.all([
-    app.claim("chat/a|user:42", 7), app.claim("chat/a|user:42", 8)
+    app.claim("chat/a|user:42", 7, "https://chatgpt.com/c/a"),
+    app.claim("chat/a|user:42", 8, "https://chatgpt.com/c/b")
   ]);
   assert.equal(first.ok, true);
   assert.equal(second.ok, true);
+});
+
+
+test("a changed assistant DOM ID cannot reopen the same ordinal, even after cooldown", async () => {
+  const app = createWorker();
+  app.configure(7);
+  assert.equal((await app.claim("reply-1", 7, "https://chatgpt.com/c/a", 7)).ok, true);
+  app.clock.now += 90000;
+  const changed = await app.claim("rerendered-reply-1", 7, "https://chatgpt.com/c/a", 7);
+  assert.equal(changed.ok, false);
+  assert.equal(changed.reason, "assistant-already-handled");
+  assert.equal((await app.claim("new-reply", 7, "https://chatgpt.com/c/a", 8)).ok, true);
+});
+
+test("two open tabs of the SAME chat share one serialized send ledger", async () => {
+  const app = createWorker();
+  app.configure(7);
+  app.configure(8);
+  const responses = await Promise.all([
+    app.claim("tab-A-reply", 7, "https://chatgpt.com/c/a", 7),
+    app.claim("tab-B-different-DOM-id", 8, "https://chatgpt.com/c/a", 7)
+  ]);
+  assert.equal(responses.filter(value => value.ok).length, 1);
+  assert.equal(responses.filter(value => value.reason === "assistant-already-handled").length, 1);
+  app.clock.now += 90000;
+  assert.equal((await app.claim("tab-B-late", 8, "https://chatgpt.com/c/a", 7)).ok, false);
+});
+
+test("a lower assistant ordinal fails closed after DOM virtualizes history", async () => {
+  const app = createWorker();
+  app.configure();
+  assert.equal((await app.claim("reply-10", 7, "https://chatgpt.com/c/a", 10)).ok, true);
+  app.clock.now += 90000;
+  assert.equal((await app.claim("reply-9", 7, "https://chatgpt.com/c/a", 9)).reason,
+    "assistant-already-handled");
 });

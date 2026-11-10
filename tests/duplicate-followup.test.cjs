@@ -15,6 +15,7 @@ function createHarness(options = {}) {
   let clicks = 0;
   let response = null;
   let replyId = 1;
+  let assistantHistory = [];
   let poll;
   let messageListener;
   const sentRuntimeMessages = [];
@@ -66,7 +67,8 @@ function createHarness(options = {}) {
     click() {
       clicks++;
       editor.innerText = ""; // ChatGPT clears the composer on submit.
-      response = assistantNode(); // ChatGPT re-renders the SAME old answer.
+      response = assistantNode(); // React repaints the old reply, not a new turn.
+      assistantHistory[assistantHistory.length - 1] = response;
     }
   };
   const stop = {
@@ -109,7 +111,7 @@ function createHarness(options = {}) {
       if (selector.includes('[contenteditable="true"][role="textbox"]')) return [editor];
       if (selector.includes('aria-label="Отправить"')) return [send];
       if (selector.includes('[data-message-author-role="assistant"]')) {
-        return response ? [response] : [];
+        return assistantHistory.slice();
       }
       return [];
     }
@@ -171,6 +173,7 @@ function createHarness(options = {}) {
     await flush(); // GET_CONFIG enables monitoring.
     poll(); // Empty conversation: establishes initial state.
     response = assistantNode();
+    assistantHistory.push(response);
     poll();
   }
   async function sendFirst() {
@@ -186,10 +189,11 @@ function createHarness(options = {}) {
     advance, baseline, poll, sendFirst,
     clicks: () => clicks,
     nextUser() { userMessages.push(userNode("Ок, продолжаем")); },
-    nextAssistant() { replyId++; response = assistantNode(); },
+    nextAssistant() { replyId++; response = assistantNode(); assistantHistory.push(response); },
     rerenderOldTurn() {
       userMessages = userMessages.map(item => userNode(item.innerText));
       response = assistantNode();
+      assistantHistory[assistantHistory.length - 1] = response;
     },
     enableSend(enabled) { sendAvailable = enabled; },
     setError(visible) { errorVisible = visible; },
@@ -460,4 +464,30 @@ test("polling while the send button becomes available cannot double-submit", asy
   await chat.advance(5000); // a stale pending timer might otherwise fire
   await chat.advance(250);
   assert.equal(chat.clicks(), 1);
+});
+
+
+test("repainted answer gets a different DOM ID but same ordinal", async () => {
+  const chat = createHarness();
+  await chat.sendFirst();
+  chat.nextUser();
+  chat.rerenderOldTurn();
+  await chat.advance(90000);
+  chat.poll();
+  await chat.advance(10000);
+  assert.equal(chat.clicks(), 1);
+});
+
+test("different answer after previous claim increments assistant ordinal", async () => {
+  const chat = createHarness();
+  await chat.sendFirst();
+  chat.nextUser();
+  chat.nextAssistant();
+  await chat.advance(46000);
+  chat.poll();
+  await chat.advance(1600);
+  chat.poll();
+  await chat.advance(5000);
+  await chat.advance(250);
+  assert.equal(chat.clicks(), 2);
 });

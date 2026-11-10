@@ -20,7 +20,7 @@ A small, local Chrome/Chromium Manifest V3 extension for continuing AI chat task
 5. Choose an MP3 using the file picker, configure the marker/delay/message, then turn ON.
 6. Repeat independently in another tab. Settings are kept for each tab within the browser session.
 
-For a local file such as file:///Users/ivan/Music/Can_-_Vitamin_C_(Bib.fm).mp3, use the **file picker**. A file:// URL alone is not permission for a web page or extension to load its bytes.
+For any local MP3 file, use the **file picker**. A file:// URL alone is not permission for a web page or extension to load its bytes.
 
 ## Safety and limitations
 

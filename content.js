@@ -641,6 +641,10 @@
     // Establish the baseline even for an empty/new conversation. Otherwise
     // the very first short assistant reply is silently ignored.
     if (!result.node) {
+      if (pending) {
+        autoDecision("Таймер отменён: пользователь отправил новое сообщение");
+        cancelPending();
+      }
       seenInitial = true;
       return;
     }

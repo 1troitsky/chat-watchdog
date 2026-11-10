@@ -91,7 +91,10 @@ function createChat(variant, userOwnsMarker = false) {
       sendMessage: async (message) => message.type === "GET_CONFIG" ?
         { enabled: true, marker: "!!!ГОТОВО!!!", reply: "Ок, продолжаем",
           delaySeconds: 5, delaySecondsVersion: 2 } :
-        message.type === "CLAIM_SEND" ? { ok: true } :
+        message.type === "ARM_SEND" ? { ok: true, armId: "mock-arm",
+          dueAt: now + 5000 } :
+        message.type === "CANCEL_ARM" ? { ok: true } :
+        message.type === "CLAIM_SEND" && message.armId === "mock-arm" ? { ok: true } :
         message.type === "GET_SEND_STATE" ? { ok: true, lockedUntil: 0 } : null
     } }
   };

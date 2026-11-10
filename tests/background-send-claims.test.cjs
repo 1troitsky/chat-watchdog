@@ -8,6 +8,8 @@ const background = fs.readFileSync(path.join(__dirname, "..", "background.js"), 
 
 function createWorker(saved = new Map(), clock = { now: 1000000 }) {
   let onMessage;
+  let nextArmId = 0;
+  const pendingArms = new Map();
   let onUpdated;
   let onRemoved;
   const session = {
@@ -36,6 +38,7 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }) {
   };
   vm.runInNewContext(background, {
     chrome, URL, Map, Promise,
+    crypto: { randomUUID: () => "test-arm-" + (++nextArmId) },
     Date: class extends Date { static now() { return clock.now; } },
     importScripts() {},
     console
@@ -59,22 +62,36 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }) {
         { tab: { id: tabId, url } }, resolve), true);
     });
   }
-  async function claim(token, tabId = 7, url = "https://chatgpt.com/c/a", assistantOrdinal = 1) {
+  async function request(message, tabId, url) {
     return new Promise(resolve => {
-      const listening = onMessage(
-        { type: "CLAIM_SEND", token, assistantOrdinal },
-        { tab: { id: tabId, url } },
-        resolve
-      );
-      assert.equal(listening, true, "claim must use an async runtime response");
+      assert.equal(onMessage(message, { tab: { id: tabId, url } }, resolve), true);
     });
+  }
+  async function arm(token, tabId = 7, url = "https://chatgpt.com/c/a", assistantOrdinal = 1) {
+    return request({ type: "ARM_SEND", token, assistantOrdinal }, tabId, url);
+  }
+  async function rawClaim(token, tabId = 7, url = "https://chatgpt.com/c/a",
+      assistantOrdinal = 1, armId) {
+    return request({ type: "CLAIM_SEND", token, assistantOrdinal, armId }, tabId, url);
+  }
+  async function claim(token, tabId = 7, url = "https://chatgpt.com/c/a", assistantOrdinal = 1) {
+    // Upgrade existing claim tests to the new worker-issued arm protocol.
+    // Share an arm for simultaneous contenders, as happens with duplicated
+    // observers of the SAME assistant reply.
+    const cacheKey = tabId + ":" + url + ":" + token + ":" + assistantOrdinal;
+    if (!pendingArms.has(cacheKey))
+      pendingArms.set(cacheKey, arm(token, tabId, url, assistantOrdinal));
+    const armed = await pendingArms.get(cacheKey);
+    if (!armed.ok) pendingArms.delete(cacheKey);
+    if (armed.ok) clock.now = Math.max(clock.now, armed.dueAt);
+    return rawClaim(token, tabId, url, assistantOrdinal, armed.armId);
   }
   function configure(tabId = 7, overrides = {}) {
     saved.set("tab:" + tabId, {
       enabled: true, mode: "auto", origin: "https://chatgpt.com", ...overrides
     });
   }
-  return { claim, clicked, userTurn, state, configure, saved, clock,
+  return { claim, rawClaim, arm, clicked, userTurn, state, configure, saved, clock,
     get onUpdated() { return onUpdated; }, get onRemoved() { return onRemoved; } };
 }
 
@@ -208,7 +225,8 @@ test("shared audit shows accepted/blocked claims and click caller across tabs wi
   assert.equal((await app.claim("private-token-1", 7, "https://chatgpt.com/c/abcXYZ", 1)).ok, true);
   assert.equal((await app.clicked(7, "https://chatgpt.com/c/abcXYZ", 1)).ok, true);
   assert.equal((await app.claim("private-token-2", 8, "https://chatgpt.com/c/otherQQ", 1)).reason, "inactive");
-  const events = app.saved.get("watchdog:send-audit");
+  const events = app.saved.get("watchdog:send-audit")
+    .filter(e => e.event !== "arm");
   assert.equal(events.length, 3);
   assert.deepEqual(Array.from(events.map(e => e.event)), ["claim", "click-called", "claim"]);
   assert.deepEqual(Array.from(events.map(e => e.outcome)), ["allowed", "content-script-reported", "inactive"]);
@@ -230,4 +248,53 @@ test("user-turn observation is logged independently from send claims, without ch
   assert.equal(audit[0].outcome, "no-recent-composer-event");
   assert.equal(audit[1].outcome, "send-click:trusted");
   assert.equal(app.saved.has("watchdog:conversation:https://chatgpt.com/c/a"), false);
+});
+
+
+test("bare legacy claims are rejected, even for a valid current reply", async () => {
+  const app = createWorker();
+  app.configure(7);
+  assert.equal((await app.rawClaim("reply-1")).reason, "unarmed");
+  assert.equal(app.saved.has("watchdog:conversation:https://chatgpt.com/c/a"), false);
+});
+
+test("worker refuses early claims and allows one only after its own deadline", async () => {
+  const app = createWorker();
+  app.configure(7, { delaySeconds: 30 });
+  const armed = await app.arm("reply-1");
+  assert.equal(armed.ok, true);
+  assert.equal(armed.dueAt, app.clock.now + 30000);
+  assert.equal((await app.rawClaim("reply-1", 7, "https://chatgpt.com/c/a", 1, armed.armId)).reason,
+    "too-early");
+  assert.equal(app.saved.has("watchdog:conversation:https://chatgpt.com/c/a"), false);
+  app.clock.now += 29999;
+  assert.equal((await app.rawClaim("reply-1", 7, "https://chatgpt.com/c/a", 1, armed.armId)).reason,
+    "too-early");
+  app.clock.now += 1;
+  assert.equal((await app.rawClaim("reply-1", 7, "https://chatgpt.com/c/a", 1, armed.armId)).ok, true);
+  assert.equal((await app.rawClaim("reply-1", 7, "https://chatgpt.com/c/a", 1, armed.armId)).reason,
+    "duplicate");
+});
+
+test("user turn revokes a prior background arm, so stale timers cannot send", async () => {
+  const app = createWorker();
+  app.configure(7);
+  const armed = await app.arm("reply-1");
+  assert.equal(armed.ok, true);
+  await app.userTurn();
+  app.clock.now = armed.dueAt + 20000;
+  assert.equal((await app.rawClaim("reply-1", 7, "https://chatgpt.com/c/a", 1, armed.armId)).reason,
+    "unarmed");
+});
+
+test("two tabs cannot both arm the same conversation, but different chats can", async () => {
+  const app = createWorker();
+  app.configure(7);
+  app.configure(8);
+  const same = await Promise.all([
+    app.arm("reply-1", 7, "https://chatgpt.com/c/a", 1),
+    app.arm("other-id", 8, "https://chatgpt.com/c/a", 1)
+  ]);
+  assert.equal(same.filter(e => e.ok).length, 1);
+  assert.equal((await app.arm("reply-1", 8, "https://chatgpt.com/c/b", 1)).ok, true);
 });

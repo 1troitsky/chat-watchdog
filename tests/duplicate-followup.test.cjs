@@ -138,7 +138,14 @@ function createHarness(options = {}) {
       sendMessage: async (msg) => {
         sentRuntimeMessages.push(msg.type);
         if (msg.type === "GET_SEND_STATE") return { ok: true, lockedUntil: options.lockedUntil || 0 };
+        if (msg.type === "ARM_SEND") return {
+          ok: true, armId: "mock-arm:" + msg.token,
+          dueAt: time + (options.delaySeconds !== undefined ? options.delaySeconds : 5) * 1000
+        };
+        if (msg.type === "CANCEL_ARM") return { ok: true };
         if (msg.type === "CLAIM_SEND") {
+          if (msg.armId !== "mock-arm:" + msg.token)
+            return { ok: false, reason: "unarmed" };
           if (claims.has(msg.token)) return { ok: false, reason: "duplicate" };
           claims.add(msg.token);
           return { ok: true };

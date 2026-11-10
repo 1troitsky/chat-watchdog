@@ -102,13 +102,8 @@
           text-align: left;
         }
         h2 { margin: 0 35px 12px 0; font-size: 19px; line-height: 1.3; font-weight: 650; }
-        p { margin: 0 0 20px; overflow-wrap: anywhere; color: #555; }
+        p { margin: 0; overflow-wrap: anywhere; color: #555; }
         button { cursor: pointer; font: inherit; }
-        .dismiss {
-          display: block; width: 100%; border: 0; padding: 11px 14px;
-          border-radius: 8px; color: #fff; background: #222; font-weight: 600;
-        }
-        .dismiss:hover { background: #444; }
         .close {
           position: absolute; right: 13px; top: 11px; border: 0;
           background: transparent; border-radius: 6px; padding: 5px 10px;
@@ -122,19 +117,16 @@
           <button class="close" type="button" aria-label="Закрыть">×</button>
           <h2 id="watchdog-title">Chatbot Mistake</h2>
           <p id="watchdog-error"></p>
-          <button class="dismiss" type="button">Закрыть и остановить звук</button>
         </section>
       </div>
     `;
     dialogError = shadow.getElementById("watchdog-error");
     dialogError.textContent = "Обнаружена ошибка: " + message;
-    shadow.querySelectorAll("button").forEach((button) => {
-      button.addEventListener("click", closeDialog);
-    });
+    shadow.querySelector(".close").addEventListener("click", closeDialog);
     dialogRoot = host;
     (document.body || document.documentElement).appendChild(host);
     document.addEventListener("keydown", handleDialogKeydown, true);
-    shadow.querySelector(".dismiss").focus();
+    shadow.querySelector(".close").focus();
   }
 
   function checkError() {

@@ -1,6 +1,6 @@
 (async function () {
   "use strict";
-  const fields = ["marker", "reply", "delaySeconds", "cooldownSeconds", "errorWords",
+  const fields = ["mode", "marker", "reply", "delaySeconds", "cooldownSeconds", "errorWords",
     "assistantSelector", "editorSelector", "sendSelector", "stopSelector",
     "completionSelector", "errorSelector"];
   const $ = (id) => document.getElementById(id);
@@ -32,6 +32,7 @@
     $("markerRegex").checked = config.markerRegex;
     $("toastEnabled").checked = config.toastEnabled;
     for (const field of fields) $(field).value = config[field];
+    $("autoSendSettings").hidden = config.mode === "errors";
     $("audioName").textContent = config.audioName || "Файл не выбран";
   };
   render();
@@ -60,6 +61,7 @@
   for (const field of fields) {
     $(field).addEventListener("change", async () => {
       config[field] = $(field).value;
+      if (field === "mode") $("autoSendSettings").hidden = config.mode === "errors";
       await save();
     });
   }
@@ -114,6 +116,7 @@
       if (!result) throw new Error("Монитор не отвечает. Включи ON и обнови страницу.");
       output.textContent = [
         "Монитор: " + (result.enabled ? "ON" : "OFF"),
+        "Режим: " + (result.mode === "errors" ? "Только ошибки" : "Автопродолжение + ошибки"),
         "Сообщений ИИ: " + result.assistantCount,
         "Режим поиска: " + result.assistantDetection,
         "Старые роли: " + result.legacyAssistantCount,

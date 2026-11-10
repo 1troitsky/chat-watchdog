@@ -5,6 +5,7 @@ A small, local Chrome/Chromium Manifest V3 extension for continuing AI chat task
 ## Features
 
 - Independent ON/OFF and configuration for **each browser tab**, even for two tabs on the same AI website.
+- **Two modes** per tab: **Автопродолжение + ошибки** (default), or **Только ошибки — без отправки**. Error-only mode watches status alerts and assistant error phrases, shows the error dialog, logs notifications and plays the selected audio, but never fills or submits the composer. Switching to error-only cancels any scheduled submission, including an in-progress async wait for the Send button. Switching back to auto mode does not replay an already displayed assistant reply.
 - Has an adjustable 45-second minimum interval between automatic sends (10–3600 seconds). Checks both the live Stop button and the enabled Send button before submission, and never clicks buttons labeled Stop. Can display short event notifications; the per-tab event journal remains available in the popup even when notifications are OFF.
 - Waits for the assistant's response to **end with** the configured text marker (default: !!!ГОТОВО!!!) or match an optional **Regex** at the end of the answer. **Leave the marker empty to continue after every finished assistant reply** (stable text + stop-generation button absent), with no Regex required. The follow-up is sent after the configured delay (5 seconds by default).
 - Optional local MP3 alert and a **Chatbot Mistake** dialog when an error phrase appears in a visible error/status element. Closing the dialog (× or Escape) stops that tab's sound immediately. An unchanged visible error does not restart the alert, but the next appearance of an error triggers again even when the text is identical. The detector also handles a site recycling the same alert element by watching message replacement and visibility changes.
@@ -18,7 +19,7 @@ A small, local Chrome/Chromium Manifest V3 extension for continuing AI chat task
 2. In Chrome, open chrome://extensions and turn on Developer mode.
 3. Click Load unpacked and select the folder containing manifest.json.
 4. Open an AI chat and click the Chat Watchdog icon.
-5. Choose an MP3 using the file picker, configure the marker/delay/message, then turn ON.
+5. Choose an MP3 using the file picker and select a mode: **Автопродолжение + ошибки** or **Только ошибки — без отправки**. Configure the marker/delay/message only for auto mode, then turn ON.
 6. Repeat independently in another tab. Settings are kept for each tab within the browser session.
 
 For any local MP3 file, use the **file picker**. A file:// URL alone is not permission for a web page or extension to load its bytes.
@@ -27,6 +28,7 @@ For any local MP3 file, use the **file picker**. A file:// URL alone is not perm
 
 - The extension is **OFF by default**. Enabling skips an already-completed assistant response to avoid replaying old tasks; a new conversation with no responses is armed immediately, including for a very short first response.
 - It never overwrites a nonempty input draft.
+- Error-only mode leaves the chat's composer untouched and preserves existing error detection, dialog, audio and event journal. The main ON/OFF toggle remains independent of the mode selection.
 - After sending a follow-up, it remembers the logical user turn, based on the visible user-message ordinal and normalized text rather than HTML node identity. It will not send twice if the SPA rerenders both the user message and the assistant reply. A genuinely new user turn can still trigger its own continuation. When no reliable user turn can be located, repeated identical replies are conservatively ignored.
 - A small notification indicates a follow-up was sent. The extension never cuts text out of, or rewrites, ChatGPT's rendered messages because React could restore the changed DOM and the message is not actually changed on the server.
 - It uses UI automation, not the AI provider's API, and does not guarantee that a response is correct or that a task has truly completed.

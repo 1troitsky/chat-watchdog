@@ -363,7 +363,7 @@
 
   async function sendIfReady(expectedKey) {
     pending = null;
-    if (sending || !config.enabled || location.href !== route) return;
+    if (sending || !config.enabled || config.mode !== "auto" || location.href !== route) return;
     const selectors = currentSelectors();
     const result = latestAssistant(selectors.assistant);
     if (!result.node) return;
@@ -394,7 +394,7 @@
       fillEditor(editor, config.reply);
       for (let attempt = 0; attempt < 10; attempt++) {
         await new Promise(resolve => setTimeout(resolve, 200));
-        if (!config.enabled || location.href !== route) return;
+        if (!config.enabled || config.mode !== "auto" || location.href !== route) return;
         if (editorText(editor) !== config.reply) return;
         // CRITICAL: recheck stop state on EVERY retry and immediately
         // before click. A Stop button must NEVER be mistaken for Send.
@@ -409,7 +409,8 @@
             !Core.completionMatches(textOf(current.node), config.marker, config.markerRegex)) return;
         const button = findSendButton(selectors.send);
         if (!button) continue;
-        if (Core.isStopAction(button) || hasStopButton(selectors.stop)) return;
+        if (!config.enabled || config.mode !== "auto" ||
+            Core.isStopAction(button) || hasStopButton(selectors.stop)) return;
         const userTurn = latestUserTurn().logicalTurn;
         if (sendGuard.alreadySent(text, userTurn)) return;
         sendGuard.record(text, userTurn);
@@ -440,6 +441,10 @@
       cancelPending();
     }
     if (checkError()) {
+      cancelPending();
+      return;
+    }
+    if (config.mode === "errors") {
       cancelPending();
       return;
     }
@@ -502,6 +507,7 @@
     const editor = findEditor(selectors.editor);
     return {
       enabled: config.enabled,
+      mode: config.mode,
       assistantCount: assistantNodes.length,
       assistantDetection: found.source,
       legacyAssistantCount: query('[data-message-author-role="assistant"]').length,
@@ -547,7 +553,20 @@
     }
     if (!message || message.type !== "WATCHDOG_CONFIG") return false;
     const wasEnabled = config.enabled;
+    const previousMode = config.mode;
     config = Core.normalize(message.config);
+    if (previousMode !== config.mode) {
+      cancelPending();
+      if (config.enabled) recordEvent("mode", config.mode === "errors" ?
+        "Режим: только ошибки — автоотправка отключена" :
+        "Режим: автопродолжение и ошибки");
+      // Returning to auto mode must not replay an already completed reply.
+      if (config.mode === "auto") {
+        seenInitial = false;
+        lastKey = "";
+        handled = new Set();
+      }
+    }
     if (!config.enabled) {
       cancelPending();
       errorTracker.reset();

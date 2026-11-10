@@ -3,6 +3,7 @@
 
   const DEFAULTS = Object.freeze({
     enabled: false,
+    mode: "auto",
     marker: "!!!ГОТОВО!!!",
     markerRegex: false,
     reply: "Ок, продолжаем",
@@ -38,6 +39,7 @@
       }
     }
     config.enabled = config.enabled === true;
+    config.mode = config.mode === "errors" ? "errors" : "auto";
     config.markerRegex = config.markerRegex === true;
     config.toastEnabled = config.toastEnabled !== false;
     config.delaySeconds = Math.max(1, Math.min(600, Number(config.delaySeconds) || 5));

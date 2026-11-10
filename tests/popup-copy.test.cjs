@@ -27,6 +27,8 @@ async function createPopup({ clipboardError = false, diagnosticsUnavailable = fa
   const saved = {
     "tab:9": { enabled: true, mode: "auto", marker: "!!!ГОТОВО!!!",
       delaySeconds: 30, cooldownSeconds: 45, origin: "https://chatgpt.com" },
+    "watchdog:send-audit": [{ at: 1000000, tabId: 9, conversationHint: "xample",
+      event: "claim", outcome: "allowed", mode: "auto", ordinal: 3 }],
     "watchdog:conversation:https://chatgpt.com/c/example": {
       origin: "https://chatgpt.com", tokens: ["a"], maxAssistantOrdinal: 3,
       lockedUntil: 0
@@ -66,7 +68,7 @@ async function createPopup({ clipboardError = false, diagnosticsUnavailable = fa
         throw new Error("Unexpected message " + message.type);
       }
     },
-    runtime: { getManifest: () => ({ version: "0.2.10" }), id: "test-extension-id" },
+    runtime: { getManifest: () => ({ version: "0.2.11" }), id: "test-extension-id" },
     storage: {
       session: {
         async get(key) {
@@ -118,7 +120,11 @@ test("copy button fetches live chat-element diagnostics AND recent journal in on
   assert.match(copied, /=== Журнал событий ===/);
   assert.match(copied, /Сообщений ИИ: 1/);
   assert.match(copied, /Последний ответ по беседе: 3/);
-  assert.match(copied, /Версия: 0\.2\.10/);
+  assert.match(copied, /Версия: 0\.2\.11/);
+  assert.match(copied, /Режимы всех вкладок этого сайта/);
+  assert.match(copied, /Вкладка #9 \[xample\]: Автопродолжение/);
+  assert.match(copied, /Общий журнал попыток Watchdog/);
+  assert.match(copied, /вкладка #9 \[xample\] claim \(allowed\)/);
   assert.match(copied, /12:00:00  Событие #1/);
   assert.equal(popup.element("diagnostic").textContent.includes("Сообщений ИИ: 1"), true);
   assert.equal(popup.element("eventLog").textContent, "12:00:00  Событие #1");

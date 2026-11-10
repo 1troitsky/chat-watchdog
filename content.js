@@ -597,6 +597,12 @@
         lastClickAt = Date.now();
         sendClicks++;
         finalButton.click();
+        // Separately record the actual click call in the shared background
+        // audit. This identifies the originating tab even when the popup
+        // inspects a different chat later.
+        chrome.runtime.sendMessage({
+          type: "WATCHDOG_SEND_CLICKED", assistantOrdinal: current.ordinal
+        }).catch(() => {});
         autoDecision("Отправлено одно сообщение автопродолжения", "sent");
         recordEvent("sent", "Отправлено: " + config.reply);
         return;

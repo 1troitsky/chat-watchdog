@@ -40,6 +40,12 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }) {
     importScripts() {},
     console
   });
+  async function clicked(tabId = 7, url = "https://chatgpt.com/c/a", assistantOrdinal = 1) {
+    return new Promise(resolve => {
+      assert.equal(onMessage({ type: "WATCHDOG_SEND_CLICKED", assistantOrdinal },
+        { tab: { id: tabId, url } }, resolve), true);
+    });
+  }
   async function state(tabId = 7, url = "https://chatgpt.com/c/a") {
     return new Promise(resolve => {
       assert.equal(onMessage({ type: "GET_SEND_STATE" },
@@ -61,7 +67,7 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }) {
       enabled: true, mode: "auto", origin: "https://chatgpt.com", ...overrides
     });
   }
-  return { claim, state, configure, saved, clock,
+  return { claim, clicked, state, configure, saved, clock,
     get onUpdated() { return onUpdated; }, get onRemoved() { return onRemoved; } };
 }
 
@@ -185,4 +191,22 @@ test("stored global lock deadline persists across worker restart and isolates co
   assert.equal((await restarted.claim("answer-2", 7, "https://chatgpt.com/c/a", 2)).reason, "cooldown");
   clock.now += 25000;
   assert.equal((await restarted.claim("answer-2", 7, "https://chatgpt.com/c/a", 2)).ok, true);
+});
+
+
+test("shared audit shows accepted/blocked claims and click caller across tabs without tokens", async () => {
+  const app = createWorker();
+  app.configure(7);
+  app.configure(8, { enabled: false });
+  assert.equal((await app.claim("private-token-1", 7, "https://chatgpt.com/c/abcXYZ", 1)).ok, true);
+  assert.equal((await app.clicked(7, "https://chatgpt.com/c/abcXYZ", 1)).ok, true);
+  assert.equal((await app.claim("private-token-2", 8, "https://chatgpt.com/c/otherQQ", 1)).reason, "inactive");
+  const events = app.saved.get("watchdog:send-audit");
+  assert.equal(events.length, 3);
+  assert.deepEqual(Array.from(events.map(e => e.event)), ["claim", "click-called", "claim"]);
+  assert.deepEqual(Array.from(events.map(e => e.outcome)), ["allowed", "content-script-reported", "inactive"]);
+  assert.deepEqual(Array.from(events.map(e => e.tabId)), [7, 7, 8]);
+  assert.equal(events[2].mode, "OFF");
+  assert.equal(JSON.stringify(events).includes("private-token"), false);
+  assert.equal(JSON.stringify(events).includes("abcXYZ"), true); // Only last six chars are kept.
 });

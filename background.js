@@ -5,6 +5,32 @@ importScripts("audio-db.js");
 const key = (tabId) => "tab:" + tabId;
 const audioEpochs = new Map();
 const sendClaimQueues = new Map();
+const auditKey = "watchdog:send-audit";
+let auditQueue = Promise.resolve();
+
+// Every claim (accepted or rejected), and every click reported by a content
+// script, is audited across all tabs. Only metadata is stored: never message
+// text, send tokens, full conversation identifiers or chat contents.
+function auditSend({ tabId, url, event, outcome, ordinal, mode }) {
+  let origin = "", conversationHint = "";
+  try {
+    const parsed = new URL(url);
+    origin = parsed.origin;
+    conversationHint = parsed.pathname.slice(-6);
+  } catch {}
+  const entry = {
+    at: Date.now(), tabId, origin, conversationHint,
+    event, outcome, mode: mode || "unknown",
+    ordinal: Number.isSafeInteger(ordinal) ? ordinal : null
+  };
+  const operation = auditQueue.catch(() => {}).then(async () => {
+    const items = await chrome.storage.session.get(auditKey);
+    const prior = Array.isArray(items[auditKey]) ? items[auditKey] : [];
+    await chrome.storage.session.set({ [auditKey]: [...prior.slice(-99), entry] });
+  });
+  auditQueue = operation;
+  return operation;
+}
 // Scope to the conversation, not the tab: the same chat can be open twice.
 const conversationKey = url => {
   const parsed = new URL(url);
@@ -134,8 +160,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const tabId = sender.tab.id;
   if (message.type === "CLAIM_SEND") {
     claimSend(tabId, message.token, message.assistantOrdinal, sender)
-      .then(sendResponse)
+      .then(async result => {
+        const conf = await chrome.storage.session.get(key(tabId));
+        await auditSend({
+          tabId, url: sender.tab.url, event: "claim",
+          outcome: result.ok ? "allowed" : result.reason,
+          ordinal: message.assistantOrdinal,
+          mode: conf[key(tabId)]?.enabled ?
+            conf[key(tabId)].mode : "OFF"
+        }).catch(() => {});
+        sendResponse(result);
+      })
       .catch(() => sendResponse({ ok: false, reason: "storage-error" }));
+    return true;
+  }
+  if (message.type === "WATCHDOG_SEND_CLICKED") {
+    chrome.storage.session.get(key(tabId))
+      .then(items => auditSend({
+        tabId, url: sender.tab.url, event: "click-called",
+        outcome: "content-script-reported",
+        ordinal: message.assistantOrdinal,
+        mode: items[key(tabId)]?.enabled ?
+          items[key(tabId)].mode : "OFF"
+      }))
+      .then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false }));
     return true;
   }
   if (message.type === "GET_SEND_STATE") {

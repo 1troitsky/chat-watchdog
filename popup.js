@@ -108,7 +108,7 @@
     }
   });
 
-  $("diagnose").addEventListener("click", async () => {
+  async function refreshDiagnostic() {
     const output = $("diagnostic");
     output.textContent = "Проверка…";
     try {
@@ -126,7 +126,7 @@
             new URL(item.url).pathname === new URL(tab.url).pathname;
         } catch { return false; }
       });
-      output.textContent = [
+      const diagnostic = [
         "Монитор: " + (result.enabled ? "ON" : "OFF"),
         "Режим: " + (result.mode === "errors" ? "Только ошибки" : "Автопродолжение + ошибки"),
         "Сообщений ИИ: " + result.assistantCount,
@@ -165,24 +165,63 @@
         "Последняя попытка: " + (result.lastAutoDecisionAt || "нет"),
         "Причина/результат: " + result.lastAutoDecision
       ].join("\n");
+      output.textContent = diagnostic;
+      return diagnostic;
     } catch (error) {
       output.textContent = "Не удалось проверить: " + (error.message || String(error));
+      throw error;
     }
+  }
+
+  $("diagnose").addEventListener("click", () => {
+    refreshDiagnostic().catch(() => {});
   });
 
   async function refreshLog() {
     try {
       const result = await chrome.tabs.sendMessage(tab.id, { type: "WATCHDOG_LOG" });
       const events = result?.events || [];
-      $("eventLog").textContent = events.length ?
+      const formatted = events.length ?
         events.slice(-30).map(entry => entry.time + "  " + entry.message).join("\n") :
         "Событий пока нет";
-    } catch {
+      $("eventLog").textContent = formatted;
+      return formatted;
+    } catch (error) {
       $("eventLog").textContent = "Монитор недоступен: включи ON и обнови страницу";
+      throw error;
     }
   }
 
-  $("refreshLog").addEventListener("click", refreshLog);
+  $("refreshLog").addEventListener("click", () => {
+    refreshLog().catch(() => {});
+  });
+
+  // One click collects both LIVE diagnostics and the latest event journal.
+  // No copied chat transcript, message text, or credentials are requested.
+  $("copyLog").addEventListener("click", async () => {
+    const button = $("copyLog");
+    if (button.disabled) return;
+    button.disabled = true;
+    try {
+      const [diagnostic, log] = await Promise.all([refreshDiagnostic(), refreshLog()]);
+      const text = [
+        "Chat Watchdog — отчёт диагностики",
+        "Дата: " + new Date().toLocaleString("ru-RU"),
+        "",
+        "=== Элементы чата ===",
+        diagnostic,
+        "",
+        "=== Журнал событий ===",
+        log
+      ].join("\n");
+      await navigator.clipboard.writeText(text);
+      status("Скопировано: журнал и диагностика элементов чата");
+    } catch (error) {
+      status("Не удалось скопировать: " + (error.message || String(error)));
+    } finally {
+      button.disabled = false;
+    }
+  });
   $("clearLog").addEventListener("click", async () => {
     try {
       await chrome.tabs.sendMessage(tab.id, { type: "WATCHDOG_CLEAR_LOG" });

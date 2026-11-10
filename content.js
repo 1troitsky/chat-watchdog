@@ -217,14 +217,21 @@
     const editor = findEditor(selectors.editor);
     if (!editor || editorText(editor)) return; // Never overwrite a human's draft.
     fillEditor(editor, config.reply);
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    if (!config.enabled || location.href !== route) return;
-    if (editorText(editor) !== config.reply) return;
-    const button = findSendButton(selectors.send);
-    if (button) {
-      handled.add(expectedKey);
-      button.click();
+    // Controlled editors can enable their submit button asynchronously.
+    // Wait briefly instead of abandoning a correctly filled message.
+    for (let attempt = 0; attempt < 10; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      if (!config.enabled || location.href !== route) return;
+      if (editorText(editor) !== config.reply) return;
+      const button = findSendButton(selectors.send);
+      if (button) {
+        handled.add(expectedKey);
+        button.click();
+        return;
+      }
     }
+    console.warn("Chat Watchdog: send button not available; follow-up left in editor.");
+
   }
 
   function check() {
@@ -244,7 +251,12 @@
     }
     const selectors = currentSelectors();
     const result = latestAssistant(selectors.assistant);
-    if (!result.node) return;
+    // Establish the baseline even for an empty/new conversation. Otherwise
+    // the very first short assistant reply is silently ignored.
+    if (!result.node) {
+      seenInitial = true;
+      return;
+    }
     const text = textOf(result.node);
     const messageId = result.node.closest("[data-message-id]")?.getAttribute("data-message-id") || "";
     const key = route + "|" + result.count + "|" + messageId + "|" + text;

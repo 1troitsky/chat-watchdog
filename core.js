@@ -89,7 +89,7 @@
     if (host === "chatgpt.com" || host.endsWith(".chatgpt.com") || host === "chat.openai.com") {
       return {
         assistant: '[data-message-author-role="assistant"]',
-        editor: '#prompt-textarea, [data-testid="composer-input"], [contenteditable="true"][role="textbox"]',
+        editor: '#prompt-textarea, #pending-conversation-input, [data-composer-input] textarea, [data-testid="composer-input"], [contenteditable="true"][role="textbox"]',
         send: 'button[data-testid="send-button"], button[aria-label="Отправить"], button[aria-label="Send message"]',
         stop: 'button[data-testid="stop-button"], button[aria-label="Stop generating"], button[aria-label="Остановить генерацию"]'
       };

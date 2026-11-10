@@ -24,7 +24,7 @@ For any local MP3 file, use the **file picker**. A file:// URL alone is not perm
 
 ## Safety and limitations
 
-- The extension is **OFF by default**. Enabling skips the already-completed assistant response to avoid replaying old tasks.
+- The extension is **OFF by default**. Enabling skips an already-completed assistant response to avoid replaying old tasks; a new conversation with no responses is armed immediately, including for a very short first response.
 - It never overwrites a nonempty input draft.
 - It uses UI automation, not the AI provider's API, and does not guarantee that a response is correct or that a task has truly completed.
 - Completion is detected by plain text or an end-anchored Regex at the **end of the last assistant message**, stable text, an absent stop button, and optionally a user-provided completion element.
@@ -73,13 +73,13 @@ Invalid regex patterns display a warning and never trigger auto-send. Regex is o
 | Field in the extension | Example CSS selector |
 | --- | --- |
 | Assistant message / Сообщение ИИ | `[data-message-author-role="assistant"]` |
-| Message editor / Поле ввода | `#prompt-textarea` |
-| Send button / Кнопка отправки | `button[data-testid="send-button"]` |
+| Message editor / Поле ввода | `#prompt-textarea` or `#pending-conversation-input` (as in the newer browser composer) |
+| Send button / Кнопка отправки | `button[data-testid="send-button"]` or `button[aria-label="Отправить"]` |
 | Stop button / Кнопка остановки | `button[data-testid="stop-button"]` |
 | Completion element / Элемент завершения | Leave blank; optional extra signal |
 | Error element / Элемент ошибки | `[role="alert"], [role="status"]` |
 
-These are **examples**, not a guarantee that every version of ChatGPT uses the same HTML. The extension already includes selectors for ChatGPT, so you do not need to copy this table into its settings unless troubleshooting.
+These are **examples**, not a guarantee that every version of ChatGPT uses the same HTML. A saved **View Source** page may only show the initial page shell and not dynamically rendered assistant messages; inspect the live **Elements** panel when diagnosing assistant selectors. The extension already includes selectors for ChatGPT, so you do not need to copy this table into its settings unless troubleshooting.
 
 ### How to find a selector yourself
 

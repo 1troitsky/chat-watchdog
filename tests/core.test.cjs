@@ -109,5 +109,7 @@ test("an unrelated DOM change does not re-arm an already dismissed error", () =>
 
 test("uses different selectors for different assistants", () => {
   assert.match(Core.selectorsFor("chatgpt.com").assistant, /data-message-author-role/);
+  assert.match(Core.selectorsFor("chatgpt.com").editor, /pending-conversation-input/);
+  assert.match(Core.selectorsFor("chatgpt.com").send, /aria-label="Отправить"/);
   assert.match(Core.selectorsFor("claude.ai").assistant, /claude-message/);
 });

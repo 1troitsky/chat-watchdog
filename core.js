@@ -116,28 +116,53 @@
     return common;
   }
 
-  // Distinguish individual DOM error instances, not just their text.
-  // Track every visible match so an older error never re-alerts when a newer
-  // one disappears. A dismissed error stays acknowledged while it remains
-  // visible, but replacement/reappearance of the error is a new occurrence.
+  // Remember active *occurrences*, not error wording. Closing the dialog
+  // acknowledges an occurrence; a new DOM message (even identical) re-arms.
+  // Some sites recycle the same wrapper, so content mutations re-arm it too.
   function createErrorTracker() {
     let visibleErrors = new Map();
+    let revisions = new Map();
+
+    function contains(container, child) {
+      return container === child ||
+        (container && typeof container.contains === "function" && container.contains(child));
+    }
+
     return {
       observe(entries) {
         const current = new Map();
         let newest = null;
         for (const entry of entries || []) {
           if (!entry || !entry.node || !entry.signature) continue;
-          current.set(entry.node, entry.signature);
-          if (visibleErrors.get(entry.node) !== entry.signature) {
-            newest = entry;
-          }
+          const revision = revisions.get(entry.node) || 0;
+          const value = { signature: entry.signature, revision };
+          current.set(entry.node, value);
+          const previous = visibleErrors.get(entry.node);
+          if (!previous || previous.signature !== value.signature ||
+              previous.revision !== value.revision) newest = entry;
         }
         visibleErrors = current;
         return newest;
       },
+      // A removed/hidden error is no longer active, even if the site later
+      // inserts the exact same node with the exact same text.
+      forgetSubtree(container) {
+        for (const node of visibleErrors.keys()) {
+          if (contains(container, node)) visibleErrors.delete(node);
+        }
+      },
+      // Replacing the error text inside a reused alert element is a fresh
+      // event even if the resulting text is identical.
+      markUpdated(container) {
+        for (const node of visibleErrors.keys()) {
+          if (contains(container, node) || contains(node, container)) {
+            revisions.set(node, (revisions.get(node) || 0) + 1);
+          }
+        }
+      },
       reset() {
         visibleErrors.clear();
+        revisions.clear();
       }
     };
   }

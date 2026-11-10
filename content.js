@@ -298,7 +298,54 @@
     check();
   }).catch(() => {});
 
-  const observer = new MutationObserver(scheduleCheck);
-  observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+  // Detect reappearing errors even when a site removes and reinserts them
+  // between two polling cycles. Text replacement can also happen in the
+  // same persistent [role="alert"] element.
+  function errorTextIn(node) {
+    if (!node) return false;
+    const content = node.nodeType === 3 ? node.nodeValue : node.textContent;
+    return !!Core.findError(String(content || "").slice(0, 1000), config.errorWords);
+  }
+
+  function inspectMutations(records) {
+    if (config.enabled) {
+      for (const record of records) {
+        if (record.type === "childList") {
+          const textRemoved = Array.from(record.removedNodes).some(errorTextIn);
+          const textAdded = Array.from(record.addedNodes).some(errorTextIn);
+          // A disappearing alert must stop being considered the old event.
+          for (const removed of record.removedNodes) {
+            errorTracker.forgetSubtree(removed);
+          }
+          if (textRemoved || textAdded) {
+            errorTracker.markUpdated(record.target);
+          }
+        } else if (record.type === "characterData") {
+          if (errorTextIn(record.target)) {
+            errorTracker.markUpdated(record.target.parentNode);
+          }
+        } else if (record.type === "attributes") {
+          // A visibility change can represent a new alert in a reused node.
+          // Avoid treating ordinary class/animation changes as new errors.
+          if (record.attributeName === "hidden" ||
+              record.attributeName === "aria-hidden" ||
+              (record.attributeName === "style" &&
+                /display:\s*none|visibility:\s*hidden/i.test(record.oldValue || ""))) {
+            const element = record.target;
+            if (visible(element)) errorTracker.markUpdated(element);
+            else errorTracker.forgetSubtree(element);
+          }
+        }
+      }
+    }
+    scheduleCheck();
+  }
+
+  const observer = new MutationObserver(inspectMutations);
+  observer.observe(document.documentElement, {
+    childList: true, subtree: true, characterData: true, characterDataOldValue: false,
+    attributes: true, attributeFilter: ["style", "hidden", "aria-hidden"],
+    attributeOldValue: true
+  });
   setInterval(check, 1500);
 })();

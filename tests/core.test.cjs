@@ -75,6 +75,38 @@ test("reappearance of the same node and changed errors are new occurrences", () 
   tracker.reset();
   assert.equal(tracker.observe([changed]), changed);
 });
+test("a removed and re-inserted identical error triggers again even between polls", () => {
+  const tracker = Core.createErrorTracker();
+  const node = { contains: (other) => other === node };
+  const error = { node, signature: "Ошибка соединения" };
+  assert.equal(tracker.observe([error]), error);
+  tracker.forgetSubtree(node); // DOM removal; next poll sees the same node again
+  assert.equal(tracker.observe([error]), error);
+  assert.equal(tracker.observe([error]), null);
+});
+
+test("re-rendering an identical error in the same wrapper triggers again", () => {
+  const tracker = Core.createErrorTracker();
+  const wrapper = { contains: (child) => child === message };
+  const message = { contains: () => false };
+  const error = { node: message, signature: "Ошибка соединения" };
+  assert.equal(tracker.observe([error]), error);
+  assert.equal(tracker.observe([error]), null); // Closing does not rearm
+  tracker.markUpdated(wrapper); // the site replaced the text in its wrapper
+  assert.equal(tracker.observe([error]), error);
+  assert.equal(tracker.observe([error]), null);
+});
+
+test("an unrelated DOM change does not re-arm an already dismissed error", () => {
+  const tracker = Core.createErrorTracker();
+  const node = {};
+  const error = { node, signature: "Ошибка соединения" };
+  assert.equal(tracker.observe([error]), error);
+  tracker.markUpdated({ contains: () => false });
+  tracker.forgetSubtree({ contains: () => false });
+  assert.equal(tracker.observe([error]), null);
+});
+
 test("uses different selectors for different assistants", () => {
   assert.match(Core.selectorsFor("chatgpt.com").assistant, /data-message-author-role/);
   assert.match(Core.selectorsFor("claude.ai").assistant, /claude-message/);

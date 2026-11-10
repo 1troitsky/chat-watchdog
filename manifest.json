@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Chat Watchdog",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Per-tab auto-continue and error sound for AI chats.",
   "minimum_chrome_version": "116",
   "permissions": [

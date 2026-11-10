@@ -6,7 +6,7 @@ A small, local Chrome/Chromium Manifest V3 extension for continuing AI chat task
 
 - Independent ON/OFF and configuration for **each browser tab**, even for two tabs on the same AI website.
 - Waits for the assistant's response to **end with** the configured text marker (default: !!!ГОТОВО!!!) or match an optional **Regex** at the end of the answer, and for the stop-generation control to disappear; then sends the configured follow-up after the chosen delay (5 seconds by default).
-- Optional local MP3 alert and a **Chatbot Mistake** dialog when an error phrase appears in a visible error/status element. Closing the dialog (× or Escape) stops that tab's sound immediately. An unchanged visible error does not restart the alert, but a new visible error instance can trigger again even if its wording is identical.
+- Optional local MP3 alert and a **Chatbot Mistake** dialog when an error phrase appears in a visible error/status element. Closing the dialog (× or Escape) stops that tab's sound immediately. An unchanged visible error does not restart the alert, but the next appearance of an error triggers again even when the text is identical. The detector also handles a site recycling the same alert element by watching message replacement and visibility changes.
 - Automatic detection for ChatGPT, Claude, Gemini, and a basic DeepSeek adapter. Other UIs can use optional CSS selectors. Web-chat interfaces change; these selectors need real-browser verification.
 - Per-site permission is requested **only when you switch ON** in that tab. No blanket permission at installation.
 - No analytics, trackers, external scripts, network requests, or backend. Selected sounds stay in browser IndexedDB and **are not uploaded**.

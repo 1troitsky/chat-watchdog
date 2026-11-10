@@ -19,6 +19,7 @@
   let lastClaimedAssistantOrdinal = 0;
   let dialogRoot = null;
   let dialogError = null;
+  let activeAlertId = "";
   let sendClicks = 0;
   let lastClickAt = 0;
   let globalLockedUntil = 0;
@@ -205,12 +206,47 @@
       .some(button => visible(button) && Core.isStopAction(button));
   }
 
-  function closeDialog() {
-    if (dialogRoot) {
-      dialogRoot.remove();
-      dialogRoot = null;
-      dialogError = null;
+  const alertHostSelector = "#chat-watchdog-alert-host";
+  const alertAckAttribute = "data-chat-watchdog-ack";
+
+  function alertHosts() {
+    return query(alertHostSelector);
+  }
+
+  // An acknowledgement is shared via the DOM, not globalThis: extension
+  // updates and isolated injected script worlds can run simultaneously.
+  // Never store the error phrase or any chat content in a DOM attribute.
+  function alertIdentity(signature) {
+    const input = route + "\u0000" + signature;
+    let hash = 2166136261;
+    for (let i = 0; i < input.length; i++) {
+      hash ^= input.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
     }
+    return (hash >>> 0).toString(36);
+  }
+
+  function isAcknowledged(id) {
+    const root = document.documentElement;
+    return !!(root && typeof root.getAttribute === "function" &&
+      root.getAttribute(alertAckAttribute) === id);
+  }
+
+  function acknowledge(id) {
+    const root = document.documentElement;
+    if (id && root && typeof root.setAttribute === "function")
+      root.setAttribute(alertAckAttribute, id);
+  }
+
+  function closeDialog() {
+    acknowledge(activeAlertId);
+    // Close ALL overlay hosts, including any orphaned hosts left by a
+    // previous content-script world. One click must never mean 10 clicks.
+    for (const host of alertHosts()) host.remove();
+    if (dialogRoot && !alertHosts().includes(dialogRoot)) dialogRoot.remove();
+    dialogRoot = null;
+    dialogError = null;
+    activeAlertId = "";
     document.removeEventListener("keydown", handleDialogKeydown, true);
     chrome.runtime.sendMessage({ type: "STOP_ERROR" }).catch(() => {});
   }
@@ -223,10 +259,19 @@
     }
   }
 
-  function showDialog(message) {
+  function showDialog(message, identity) {
+    if (isAcknowledged(identity)) return false;
+    // Enforce one actual DOM overlay across all instances, not only the
+    // one overlay referenced by this content-script's local variables.
+    const existing = alertHosts();
+    if (existing.length) {
+      for (const extra of existing.slice(1)) extra.remove();
+      return false;
+    }
     if (dialogRoot) {
-      dialogError.textContent = message;
-      return;
+      dialogRoot = null;
+      dialogError = null;
+      activeAlertId = "";
     }
     const host = document.createElement("div");
     host.id = "chat-watchdog-alert-host";
@@ -269,9 +314,11 @@
     dialogError.textContent = "Обнаружена ошибка: " + message;
     shadow.querySelector(".close").addEventListener("click", closeDialog);
     dialogRoot = host;
+    activeAlertId = identity;
     (document.body || document.documentElement).appendChild(host);
     document.addEventListener("keydown", handleDialogKeydown, true);
     shadow.querySelector(".close").focus();
+    return true;
   }
 
   // Prefer the most specific descendant containing the error. Some sites
@@ -341,10 +388,14 @@
     const fresh = errorTracker.observe(matches);
     if (fresh) {
       recordEvent("error", "Ошибка: " + fresh.phrase);
-      if (dialogRoot) {
+      const id = alertIdentity(fresh.signature);
+      if (isAcknowledged(id)) return assistantErrorActive || matches.length > 0;
+      if (dialogRoot && alertHosts().includes(dialogRoot) && dialogError) {
+        activeAlertId = id;
         dialogError.textContent = "Обнаружена ошибка: " + fresh.phrase;
-      } else {
-        showDialog(fresh.phrase);
+      } else if (showDialog(fresh.phrase, id)) {
+        // A second script instance must neither overlay the first nor
+        // start a duplicate alarm.
         chrome.runtime.sendMessage({ type: "PLAY_ERROR" }).catch(() => {});
       }
     }

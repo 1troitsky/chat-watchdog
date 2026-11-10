@@ -121,7 +121,7 @@ Open **Chat Watchdog → CSS-селекторы (необязательно) →
 
 Expected in an idle chat after a new assistant message ending with the marker: **Сообщений ИИ** greater than zero, **Маркер** = ДА, **Редактор** = найден, **Поле пустое** = да, **Кнопка отправки активна** = да and **Кнопка остановки видна** = нет. The waiting flag appears while the configured delay is counting down. If the assistant count is zero, inspect a *live assistant reply* (not the composer) and configure its CSS selector.
 
-Note that the HTML source of a ChatGPT page can contain only the initial app shell. Line 155 in the previously supplied saved HTML was a CSS color variable, not a JavaScript exception. For a JavaScript error, copy its complete message and source file from Chrome DevTools → Console.
+Note that the HTML source of a ChatGPT page can contain only the initial app shell. For a JavaScript error, copy its complete message and source file from Chrome DevTools → Console.
 
 ## Check
 

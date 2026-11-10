@@ -35,6 +35,57 @@ For any local MP3 file, use the **file picker**. A file:// URL alone is not perm
 - Built-in selectors are best-effort; unsupported sites require custom CSS selectors and manual testing.
 - This is a local developer extension, not a Chrome Web Store release.
 
+## CSS selectors (advanced)
+
+**Usually you can leave all these fields blank.** Chat Watchdog has built-in selectors for ChatGPT, Claude, Gemini, and a basic DeepSeek adapter. Enter a custom CSS selector only when the site layout has changed or you want to use another web chat. A custom value overrides the default for that field in the current tab.
+
+### Example: ChatGPT
+
+| Field in the extension | Example CSS selector |
+| --- | --- |
+| Assistant message / Сообщение ИИ | `[data-message-author-role="assistant"]` |
+| Message editor / Поле ввода | `#prompt-textarea` |
+| Send button / Кнопка отправки | `button[data-testid="send-button"]` |
+| Stop button / Кнопка остановки | `button[data-testid="stop-button"]` |
+| Completion element / Элемент завершения | Leave blank; optional extra signal |
+| Error element / Элемент ошибки | `[role="alert"], [role="status"]` |
+
+These are **examples**, not a guarantee that every version of ChatGPT uses the same HTML. The extension already includes selectors for ChatGPT, so you do not need to copy this table into its settings unless troubleshooting.
+
+### How to find a selector yourself
+
+1. Open the chat in Chrome.
+2. Right-click the element you want to detect, for example the **Send** button, and choose **Inspect** (Просмотреть код).
+3. In DevTools, inspect attributes such as `id`, `data-testid`, or `aria-label`. For example:
+
+   ```html
+   <button data-testid="send-button">...</button>
+   ```
+
+4. Enter the corresponding **CSS selector**, not the whole HTML tag:
+
+   ```css
+   button[data-testid="send-button"]
+   ```
+
+5. Alternatively, right-click the highlighted element in the **Elements** panel and select **Copy → Copy selector**. Beware: automatically generated selectors often contain temporary classes or positional fragments and may break after a site update.
+
+### Test a selector in Chrome
+
+Open **DevTools → Console** and run:
+
+```javascript
+document.querySelectorAll('button[data-testid="send-button"]')
+```
+
+- If Chrome returns elements, the selector currently matches them.
+- If Chrome returns `NodeList []`, there are no matches **right now**. The selector may be incorrect *or* the element may be temporarily absent.
+- For example, a **Stop** button generally appears only during generation. Test while the assistant is replying.
+- You can list alternatives separated by commas: `button[data-testid="send-button"], button[aria-label="Отправить"]`.
+- If you see a syntax error in the console, the CSS selector itself is invalid.
+
+**What each field controls:** Assistant message identifies the text to examine for the completion marker; Message editor is where the follow-up is entered; Send button submits it; Stop button indicates generation is ongoing; Completion element is an optional extra required signal (leave it blank by default); Error element limits where error phrases are searched (e.g. visible alerts and status messages). Error phrases are configured separately, one per line.
+
 ## Check
 
 Run: node --test

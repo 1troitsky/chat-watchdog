@@ -187,8 +187,14 @@ function createHarness(options = {}) {
     assert.equal(clicks, 1);
   }
 
+  function diagnose() {
+    let snapshot;
+    messageListener({ type: "WATCHDOG_DIAGNOSE" }, null, result => { snapshot = result; });
+    return snapshot;
+  }
+
   return {
-    advance, baseline, poll, sendFirst,
+    advance, baseline, poll, sendFirst, diagnose,
     clicks: () => clicks,
     nextUser() { userMessages.push(userNode("Ок, продолжаем")); },
     nextAssistant() { replyId++; response = assistantNode(); assistantHistory.push(response); },
@@ -553,4 +559,35 @@ test("30-second post-marker delay never sends at 5 or 29 seconds", async () => {
   await chat.advance(1000); // 30-second delay expires.
   await chat.advance(250);
   assert.equal(chat.clicks(), 1);
+});
+
+
+test("a pending 30s attempt reports its absolute deadline, then why it was cancelled", async () => {
+  const chat = createHarness({ delaySeconds: 30 });
+  await chat.baseline();
+  await chat.advance(1600);
+  chat.poll();
+  const before = chat.diagnose();
+  assert.equal(before.pending, true);
+  assert.equal(before.scheduledSendAt, 31600);
+  chat.nextUser(); // The human has typed another message during the delay.
+  chat.poll();
+  const after = chat.diagnose();
+  assert.equal(after.pending, false);
+  assert.match(after.lastAutoDecision, /Таймер отменён/);
+  await chat.advance(90000);
+  assert.equal(chat.clicks(), 0);
+});
+
+test("the expired timer reports Stop as the cancellation reason, not a fake send", async () => {
+  const chat = createHarness({ delaySeconds: 30 });
+  await chat.baseline();
+  await chat.advance(1600);
+  chat.poll();
+  chat.showStop(true);
+  await chat.advance(30000);
+  await chat.advance(250);
+  assert.equal(chat.clicks(), 0);
+  assert.match(chat.diagnose().lastAutoDecision, /Stop/);
+  assert.equal(chat.sentRuntimeMessages.filter(x => x === "CLAIM_SEND").length, 0);
 });

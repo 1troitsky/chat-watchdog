@@ -15,6 +15,9 @@ function createHarness(options = {}) {
   let clicks = 0;
   let response = null;
   let poll;
+  let messageListener;
+  const sentRuntimeMessages = [];
+  let errorVisible = false;
   let userMessages = [userNode("Ну давай пиши готово")];
   let sendAvailable = true;
   let stopVisible = false;
@@ -61,8 +64,28 @@ function createHarness(options = {}) {
     getAttribute(name) { return name === "aria-label" ? "Остановить генерацию" : null; },
     click() { stopClicks++; }
   };
+  const alert = {
+    innerText: "Нет ответа от ChatGPT. Проверьте подключение к интернету",
+    children: [],
+    getClientRects: () => [1]
+  };
   const document = {
     documentElement: {},
+    body: { appendChild() {} },
+    addEventListener() {},
+    removeEventListener() {},
+    createElement() {
+      const close = { addEventListener() {}, focus() {} };
+      return {
+        style: {}, remove() {}, attachShadow() {
+          return {
+            innerHTML: "",
+            getElementById() { return { textContent: "" }; },
+            querySelector() { return close; }
+          };
+        }
+      };
+    },
     createRange: () => ({ selectNodeContents() {}, collapse() {} }),
     execCommand(command, unused, value) {
       if (command !== "insertText") return false;
@@ -71,6 +94,7 @@ function createHarness(options = {}) {
     },
     querySelectorAll(selector) {
       if (selector === '[data-user-message-bubble="true"]') return userMessages;
+      if (selector.startsWith('[role="alert"], [role="status"]')) return errorVisible ? [alert] : [];
       if (selector.includes('button[data-testid="stop-button"]')) return stopVisible ? [stop] : [];
       if (selector.includes('[contenteditable="true"][role="textbox"]')) return [editor];
       if (selector.includes('aria-label="Отправить"')) return [send];
@@ -95,13 +119,17 @@ function createHarness(options = {}) {
     setInterval(fn) { poll = fn; return 1; },
     MutationObserver: class { observe() {} },
     chrome: { runtime: {
-      onMessage: { addListener() {} },
-      sendMessage: async (msg) => msg.type === "GET_CONFIG" ? {
+      onMessage: { addListener(fn) { messageListener = fn; } },
+      sendMessage: async (msg) => {
+        sentRuntimeMessages.push(msg.type);
+        return msg.type === "GET_CONFIG" ? {
         enabled: true,
+        mode: options.mode || "auto",
         marker: options.marker !== undefined ? options.marker : "!!!ГОТОВО!!!",
         reply: "Ок, продолжаем",
         delaySeconds: 5
-      } : null
+      } : null;
+      }
     } }
   };
   vm.createContext(context);
@@ -148,10 +176,83 @@ function createHarness(options = {}) {
       response = assistantNode();
     },
     enableSend(enabled) { sendAvailable = enabled; },
+    setError(visible) { errorVisible = visible; },
+    sentRuntimeMessages,
+    changeMode(mode) {
+      messageListener({ type: "WATCHDOG_CONFIG", config: {
+        enabled: true, mode,
+        marker: options.marker !== undefined ? options.marker : "!!!ГОТОВО!!!",
+        delaySeconds: 5, cooldownSeconds: 45,
+        reply: "Ок, продолжаем"
+      } });
+    },
     showStop(value) { stopVisible = value; },
     stopClicks: () => stopClicks
   };
 }
+
+test("error-only mode never schedules or sends even when marker is present", async () => {
+  const chat = createHarness({ mode: "errors" });
+  await chat.baseline();
+  chat.poll();
+  await chat.advance(70000);
+  chat.poll();
+  await chat.advance(70000);
+  assert.equal(chat.clicks(), 0);
+});
+
+test("error-only mode still displays the error and triggers the audio event", async () => {
+  const chat = createHarness({ mode: "errors" });
+  await chat.baseline();
+  chat.setError(true);
+  chat.poll();
+  assert.equal(chat.sentRuntimeMessages.filter(x => x === "PLAY_ERROR").length, 1);
+  await chat.advance(120000);
+  chat.poll();
+  assert.equal(chat.clicks(), 0);
+  assert.equal(chat.sentRuntimeMessages.filter(x => x === "PLAY_ERROR").length, 1);
+});
+
+test("switching to error-only mode cancels the delayed send", async () => {
+  const chat = createHarness();
+  await chat.baseline();
+  await chat.advance(1600);
+  chat.poll(); // 5-second send timer is armed
+  chat.changeMode("errors");
+  await chat.advance(10000);
+  assert.equal(chat.clicks(), 0);
+});
+
+test("switching to error-only mode during async send-button wait prevents clicking", async () => {
+  const chat = createHarness();
+  await chat.baseline();
+  chat.enableSend(false);
+  await chat.advance(1600);
+  chat.poll();
+  await chat.advance(5000); // Editor has been filled, button is still disabled
+  chat.changeMode("errors");
+  chat.enableSend(true);
+  await chat.advance(10000);
+  assert.equal(chat.clicks(), 0);
+});
+
+test("switching back to auto mode does not replay a previously visible reply", async () => {
+  const chat = createHarness({ mode: "errors" });
+  await chat.baseline();
+  chat.changeMode("auto");
+  await chat.advance(1600);
+  chat.poll();
+  await chat.advance(5000);
+  assert.equal(chat.clicks(), 0);
+  chat.nextUser();
+  chat.nextAssistant();
+  chat.poll();
+  await chat.advance(1600);
+  chat.poll();
+  await chat.advance(5000);
+  await chat.advance(250);
+  assert.equal(chat.clicks(), 1);
+});
 
 test("markerless mode requires longer stable text and still sends only once", async () => {
   const chat = createHarness({ marker: "", replyText: "Работа завершена." });

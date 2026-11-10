@@ -141,6 +141,14 @@ test("new user turn can send identical marker, but unknown turns fail closed", (
   assert.equal(guard.alreadySent("!!!ГОТОВО!!!", null), true);
 });
 
+test("error-only mode is normalized, kept independent of the ON switch", () => {
+  assert.equal(Core.normalize({ enabled: true, mode: "errors" }).mode, "errors");
+  assert.equal(Core.normalize({ enabled: false, mode: "errors" }).mode, "errors");
+  assert.equal(Core.normalize({ enabled: true }).mode, "auto");
+  assert.equal(Core.normalize({ enabled: true, mode: "something" }).mode, "auto");
+  assert.equal(Core.normalize({ enabled: true, mode: "errors" }).enabled, true);
+});
+
 test("empty completion marker is intentional and not replaced with a default", () => {
   const config = Core.normalize({ marker: "", markerRegex: true });
   assert.equal(config.marker, "");

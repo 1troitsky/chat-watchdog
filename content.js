@@ -16,6 +16,7 @@
   const acknowledgedAssistantAlerts = new Set();
   const sendGuard = Core.createSendGuard();
   const submittedAssistantTokens = new Set();
+  let lastClaimedAssistantOrdinal = 0;
   let dialogRoot = null;
   let dialogError = null;
   let sendClicks = 0;
@@ -133,7 +134,10 @@
     const all = result.nodes;
     const lastUser = latestUserTurn().node;
     const nodes = all.filter(node => followsUser(node, lastUser));
-    return { node: nodes[nodes.length - 1], count: nodes.length, source: result.source };
+    const latest = nodes[nodes.length - 1];
+    return { node: latest, count: nodes.length,
+      ordinal: latest ? all.lastIndexOf(latest) + 1 : 0,
+      total: all.length, source: result.source };
   }
 
   function sendToken(node, text, count) {
@@ -423,7 +427,8 @@
     const text = textOf(result.node);
     const key = messageKey(result.node, result.count, text);
     const assistantToken = sendToken(result.node, text, result.count);
-    if (key !== expectedKey || submittedAssistantTokens.has(assistantToken) ||
+    if (key !== expectedKey || result.ordinal <= lastClaimedAssistantOrdinal ||
+        submittedAssistantTokens.has(assistantToken) ||
         !Core.completionMatches(text, config.marker, config.markerRegex) ||
         hasStopButton(selectors.stop) ||
         sendGuard.alreadySent(text, latestUserTurn().logicalTurn)) return;
@@ -472,10 +477,13 @@
         // It serializes claims and persists them in chrome.storage.session,
         // preventing another content-script instance from sending as well.
         const token = sendToken(current.node, text, current.count);
-        if (submittedAssistantTokens.has(token)) return;
+        if (submittedAssistantTokens.has(token) ||
+            current.ordinal <= lastClaimedAssistantOrdinal) return;
         let claim;
         try {
-          claim = await chrome.runtime.sendMessage({ type: "CLAIM_SEND", token });
+          claim = await chrome.runtime.sendMessage({
+            type: "CLAIM_SEND", token, assistantOrdinal: current.ordinal
+          });
         } catch (error) {
           recordEvent("blocked", "Отправка отменена: нет подтверждения защиты от дублей");
           return; // Fail closed, not open.
@@ -489,6 +497,7 @@
         // Reserve even if the UI changes while we are waiting. The
         // background ledger already owns this reply and must never retry it.
         submittedAssistantTokens.add(token);
+        lastClaimedAssistantOrdinal = Math.max(lastClaimedAssistantOrdinal, current.ordinal);
         // Claim may take time: conditions can change during the await.
         // A claim is intentionally never rolled back, even if UI changed;
         // preventing duplicate Sends is more important than retrying blindly.
@@ -527,6 +536,7 @@
       errorTracker.reset();
       acknowledgedAssistantAlerts.clear();
       route = location.href;
+      lastClaimedAssistantOrdinal = 0;
       seenInitial = false;
       lastKey = "";
       handled = new Set();
@@ -561,6 +571,7 @@
       return;
     }
     if (handled.has(key) || sending ||
+      result.ordinal <= lastClaimedAssistantOrdinal ||
       submittedAssistantTokens.has(sendToken(result.node, text, result.count)) ||
       !Core.completionMatches(text, config.marker, config.markerRegex) ||
       sendGuard.alreadySent(text, latestUserTurn().logicalTurn)) return;
@@ -619,6 +630,8 @@
       logicalUserTurnDetected: !!latestUserTurn().logicalTurn,
       sendClicks,
       rememberedAssistantReplies: submittedAssistantTokens.size,
+      assistantOrdinal: latestAssistant(selectors.assistant).ordinal,
+      lastClaimedAssistantOrdinal,
       cooldownRemainingSeconds: Math.ceil(cooldownRemainingMs() / 1000),
       sending,
       toastEnabled: config.toastEnabled,

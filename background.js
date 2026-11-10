@@ -5,7 +5,11 @@ importScripts("audio-db.js");
 const key = (tabId) => "tab:" + tabId;
 const audioEpochs = new Map();
 const sendClaimQueues = new Map();
-const sentKey = (tabId) => "watchdog:sent:" + tabId;
+// Scope to the conversation, not the tab: the same chat can be open twice.
+const conversationKey = url => {
+  const parsed = new URL(url);
+  return "watchdog:conversation:" + parsed.origin + parsed.pathname;
+};
 let creatingOffscreen;
 
 function nextAudioEpoch(tabId) {
@@ -16,23 +20,36 @@ function nextAudioEpoch(tabId) {
 
 // Atomic per-tab claims across all injected scripts. The ledger survives
 // service-worker suspension and content-script reinjection during this session.
-async function claimSend(tabId, token, sender) {
-  if (typeof token !== "string" || !token || token.length > 2048) {
-    return { ok: false, reason: "invalid-token" };
+async function claimSend(tabId, token, assistantOrdinal, sender) {
+  if (typeof token !== "string" || !token || token.length > 2048 ||
+      !Number.isSafeInteger(assistantOrdinal) ||
+      assistantOrdinal < 1 || assistantOrdinal > 1000000) {
+    return { ok: false, reason: "invalid-claim" };
   }
-  const previous = sendClaimQueues.get(tabId) || Promise.resolve();
+  if (!sender.tab?.url) return { ok: false, reason: "missing-url" };
+  let scope;
+  try { scope = conversationKey(sender.tab.url); }
+  catch { return { ok: false, reason: "invalid-url" }; }
+  const previous = sendClaimQueues.get(scope) || Promise.resolve();
   const work = previous.catch(() => {}).then(async () => {
-    const keys = [key(tabId), sentKey(tabId)];
+    const keys = [key(tabId), scope];
     const items = await chrome.storage.session.get(keys);
     const config = items[key(tabId)];
     if (!config || config.enabled !== true || config.mode === "errors" ||
         !sender.tab?.url || new URL(sender.tab.url).origin !== config.origin) {
       return { ok: false, reason: "inactive" };
     }
-    const prior = items[sentKey(tabId)];
+    const prior = items[scope];
     const seen = prior && prior.origin === config.origin && Array.isArray(prior.tokens) ?
       prior.tokens : [];
     if (seen.includes(token)) return { ok: false, reason: "duplicate" };
+    // A replaced DOM turn ID cannot re-open an already processed reply.
+    if (prior && prior.origin === config.origin &&
+        Number.isSafeInteger(prior.maxAssistantOrdinal) &&
+        assistantOrdinal <= prior.maxAssistantOrdinal) {
+      return { ok: false, reason: "assistant-already-handled",
+        lastOrdinal: prior.maxAssistantOrdinal };
+    }
     const now = Date.now();
     const minIntervalMs = Math.max(10, Math.min(3600,
       Number(config.cooldownSeconds) || 45)) * 1000;
@@ -47,16 +64,16 @@ async function claimSend(tabId, token, sender) {
       }
     }
     await chrome.storage.session.set({
-      [sentKey(tabId)]: {
+      [scope]: {
         origin: config.origin, tokens: [...seen.slice(-499), token],
-        lastClaimAt: now
+        lastClaimAt: now, maxAssistantOrdinal: assistantOrdinal
       }
     });
     return { ok: true };
   });
-  sendClaimQueues.set(tabId, work);
+  sendClaimQueues.set(scope, work);
   try { return await work; }
-  finally { if (sendClaimQueues.get(tabId) === work) sendClaimQueues.delete(tabId); }
+  finally { if (sendClaimQueues.get(scope) === work) sendClaimQueues.delete(scope); }
 }
 
 async function offscreenExists() {
@@ -112,7 +129,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!sender.tab || !Number.isInteger(sender.tab.id)) return false;
   const tabId = sender.tab.id;
   if (message.type === "CLAIM_SEND") {
-    claimSend(tabId, message.token, sender)
+    claimSend(tabId, message.token, message.assistantOrdinal, sender)
       .then(sendResponse)
       .catch(() => sendResponse({ ok: false, reason: "storage-error" }));
     return true;
@@ -161,8 +178,8 @@ chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   stopTabAudio(tabId).catch(() => {});
-  chrome.storage.session.remove([key(tabId), sentKey(tabId)]).catch(() => {});
-  sendClaimQueues.delete(tabId);
+  // Keep the shared conversation ledger while another tab may be open.
+  chrome.storage.session.remove(key(tabId)).catch(() => {});
   ChatWatchdogAudio.remove(tabId).catch(() => {});
   audioEpochs.delete(tabId);
 });

@@ -114,6 +114,18 @@
     try {
       const result = await chrome.tabs.sendMessage(tab.id, { type: "WATCHDOG_DIAGNOSE" });
       if (!result) throw new Error("Монитор не отвечает. Включи ON и обнови страницу.");
+      const conversationStorageKey = "watchdog:conversation:" +
+        new URL(tab.url).origin + new URL(tab.url).pathname;
+      const ledgerItems = await chrome.storage.session.get(conversationStorageKey);
+      const ledger = ledgerItems[conversationStorageKey];
+      const allTabs = await chrome.tabs.query({});
+      const chatTabs = allTabs.filter(item => {
+        try {
+          return !!item.url &&
+            new URL(item.url).origin === new URL(tab.url).origin &&
+            new URL(item.url).pathname === new URL(tab.url).pathname;
+        } catch { return false; }
+      });
       output.textContent = [
         "Монитор: " + (result.enabled ? "ON" : "OFF"),
         "Режим: " + (result.mode === "errors" ? "Только ошибки" : "Автопродолжение + ошибки"),
@@ -131,6 +143,13 @@
         "Маркер уже отправлен: " + (result.markerAlreadySent ? "ДА" : "НЕТ"),
         "Нажатий Отправить монитором: " + result.sendClicks,
         "Запомнено ответов ИИ: " + result.rememberedAssistantReplies,
+        "Номер текущего ответа: " + result.assistantOrdinal,
+        "Последний ответ обработчика: " + result.lastClaimedAssistantOrdinal,
+        "Последний ответ по беседе: " + (ledger?.maxAssistantOrdinal || 0),
+        "Запросов в журнале беседы: " + (ledger?.tokens?.length || 0),
+        "Вкладок с этой беседой: " + chatTabs.length,
+        "Версия: " + chrome.runtime.getManifest().version +
+          " · ID: " + chrome.runtime.id.slice(0, 8),
         "Пауза до следующей отправки: " + result.cooldownRemainingSeconds + " с",
         "Отправка в процессе: " + (result.sending ? "да" : "нет"),
         "Редактор: " + (result.editorFound ? "найден" : "НЕ НАЙДЕН"),

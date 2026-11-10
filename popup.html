@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chat Watchdog</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <div><strong>Chat Watchdog</strong><small id="site">Определение вкладки…</small></div>
+    <label class="switch" title="Включить для текущей вкладки">
+      <input id="enabled" type="checkbox"><span class="track"></span>
+    </label>
+  </header>
+  <main id="settings">
+    <label>Маркер завершения<input id="marker" type="text"></label>
+    <label>Сообщение для отправки<textarea id="reply" rows="2"></textarea></label>
+    <label>Пауза (секунды)<input id="delaySeconds" type="number" min="1" max="600"></label>
+    <label>Фразы ошибок (по одной в строке)<textarea id="errorWords" rows="4"></textarea></label>
+    <label>Звуковой сигнал
+      <input id="audioFile" type="file" accept="audio/*">
+      <small id="audioName">Файл не выбран</small>
+    </label>
+    <details>
+      <summary>CSS-селекторы (необязательно)</summary>
+      <label>Сообщение ИИ<input id="assistantSelector" type="text" placeholder="Определяется автоматически"></label>
+      <label>Поле ввода<input id="editorSelector" type="text" placeholder="Определяется автоматически"></label>
+      <label>Кнопка отправки<input id="sendSelector" type="text" placeholder="Определяется автоматически"></label>
+      <label>Кнопка остановки<input id="stopSelector" type="text" placeholder="Определяется автоматически"></label>
+      <label>Элемент завершения<input id="completionSelector" type="text" placeholder="Не требуется"></label>
+      <label>Элемент ошибки<input id="errorSelector" type="text" placeholder="Уведомления об ошибках"></label>
+    </details>
+    <p id="status" role="status"></p>
+  </main>
+  <script src="core.js"></script>
+  <script src="audio-db.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

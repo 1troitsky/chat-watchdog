@@ -17,6 +17,9 @@ summary { cursor: pointer; font-weight: 600; margin-bottom: 12px; }
 
 .regex-option { display: flex; align-items: center; gap: 8px; margin-top: -5px; margin-bottom: 12px; font-weight: 400; cursor: pointer; }
 .regex-option input { margin: 0; }
+ .log-buttons { display: flex; gap: 8px; margin-bottom: 10px; }
+.log-buttons button { flex: 1; padding: 7px; border: 1px solid #ddd; border-radius: 6px; background: #fafafa; cursor: pointer; }
+#eventLog { max-height: 190px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.6 ui-monospace, monospace; color: #4b4b4b; }
 #status { min-height: 16px; margin: 12px 0 0; color: #555; font-size: 12px; }
 .switch { position: relative; display: inline-block; margin: 0; flex: none; }
 .switch input { position: absolute; width: 1px; height: 1px; opacity: 0; }

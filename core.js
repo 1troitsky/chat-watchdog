@@ -7,6 +7,8 @@
     markerRegex: false,
     reply: "Ок, продолжаем",
     delaySeconds: 5,
+    cooldownSeconds: 45,
+    toastEnabled: true,
     errorWords: "Соединение прервано\nОшибка соединения\nНет ответа от ChatGPT. Проверьте подключение к интернету\nВы достигли лимита\nВы достигни лимита\nConnection interrupted\nNetwork error\nRate limit reached\n!!!ЕСТЬ ЗАДАНИЕ ДЛЯ АГЕНТА!!!\n!!!ЖДУ РЕШЕНИЕ!!!\n!!!У НАС ПРОБЛЕМА!!!\n!!НУЖНА ЛОКАЛЬНАЯ ПРОВЕРКА!!!",
     assistantSelector: "",
     editorSelector: "",
@@ -28,7 +30,9 @@
     }
     config.enabled = config.enabled === true;
     config.markerRegex = config.markerRegex === true;
+    config.toastEnabled = config.toastEnabled !== false;
     config.delaySeconds = Math.max(1, Math.min(600, Number(config.delaySeconds) || 5));
+    config.cooldownSeconds = Math.max(10, Math.min(3600, Number(config.cooldownSeconds) || 45));
     for (const key of Object.keys(DEFAULTS)) {
       if (typeof DEFAULTS[key] === "string") {
         config[key] = String(config[key] == null ? "" : config[key]);
@@ -109,7 +113,7 @@
         assistant: '[data-message-author-role="assistant"], [data-message-role="assistant"], [data-role="assistant"], [data-message-author="assistant"], [data-content-search-unit-key$=":assistant"], [data-content-search-unit-key$=":assistant:final"], [data-turn-key]:not(:has([data-user-message-bubble="true"]))',
         editor: '#prompt-textarea, #pending-conversation-input, [data-composer-input] textarea, [data-testid="composer-input"], [contenteditable="true"][role="textbox"]',
         send: 'button[data-testid="send-button"], button[aria-label="Отправить"], button[aria-label="Send message"]',
-        stop: 'button[data-testid="stop-button"], button[aria-label="Stop generating"], button[aria-label="Остановить генерацию"]'
+        stop: 'button[data-testid="stop-button"], button[data-testid="stop-generating-button"], button[aria-label="Stop generating"], button[aria-label="Stop response"], button[aria-label="Stop"], button[aria-label="Остановить генерацию"], button[aria-label="Остановить"], button[aria-label="Прервать"]'
       };
     }
     if (host === "claude.ai" || host.endsWith(".claude.ai")) {
@@ -132,6 +136,14 @@
       return Object.assign({}, common, { assistant: ".ds-markdown" });
     }
     return common;
+  }
+
+  function isStopAction(button) {
+    if (!button) return false;
+    const label = [button.getAttribute && button.getAttribute("aria-label"),
+      button.getAttribute && button.getAttribute("title"),
+      button.getAttribute && button.getAttribute("data-testid")].filter(Boolean).join(" ").toLowerCase();
+    return /stop|interrupt|cancel generation|останов|прерва|прекрат|отменить генерац/.test(label);
   }
 
   // Remember active *occurrences*, not error wording. Closing the dialog
@@ -217,7 +229,7 @@
     };
   }
 
-  const api = { DEFAULTS, normalize, compileMarker, hasMarker, completionMatches, findError, findErrorLine, selectorsFor, createErrorTracker, createSendGuard, userTurnFingerprint };
+  const api = { DEFAULTS, normalize, compileMarker, hasMarker, completionMatches, findError, findErrorLine, selectorsFor, isStopAction, createErrorTracker, createSendGuard, userTurnFingerprint };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.ChatWatchdogCore = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

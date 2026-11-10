@@ -1,6 +1,6 @@
 (async function () {
   "use strict";
-  const fields = ["marker", "reply", "delaySeconds", "errorWords",
+  const fields = ["marker", "reply", "delaySeconds", "cooldownSeconds", "errorWords",
     "assistantSelector", "editorSelector", "sendSelector", "stopSelector",
     "completionSelector", "errorSelector"];
   const $ = (id) => document.getElementById(id);
@@ -30,6 +30,7 @@
   const render = () => {
     $("enabled").checked = config.enabled;
     $("markerRegex").checked = config.markerRegex;
+    $("toastEnabled").checked = config.toastEnabled;
     for (const field of fields) $(field).value = config[field];
     $("audioName").textContent = config.audioName || "Файл не выбран";
   };
@@ -62,6 +63,11 @@
       await save();
     });
   }
+
+  $("toastEnabled").addEventListener("change", async () => {
+    config.toastEnabled = $("toastEnabled").checked;
+    await save();
+  });
 
   $("markerRegex").addEventListener("change", async () => {
     config.markerRegex = $("markerRegex").checked;
@@ -121,6 +127,8 @@
         "Ход пользователя распознан: " + (result.logicalUserTurnDetected ? "да" : "нет"),
         "Маркер уже отправлен: " + (result.markerAlreadySent ? "ДА" : "НЕТ"),
         "Нажатий Отправить монитором: " + result.sendClicks,
+        "Пауза до следующей отправки: " + result.cooldownRemainingSeconds + " с",
+        "Отправка в процессе: " + (result.sending ? "да" : "нет"),
         "Редактор: " + (result.editorFound ? "найден" : "НЕ НАЙДЕН"),
         "Поле пустое: " + (result.editorEmpty ? "да" : "нет"),
         "Кнопка отправки активна: " + (result.sendButtonFound ? "да" : "нет"),
@@ -130,6 +138,26 @@
     } catch (error) {
       output.textContent = "Не удалось проверить: " + (error.message || String(error));
     }
+  });
+
+  async function refreshLog() {
+    try {
+      const result = await chrome.tabs.sendMessage(tab.id, { type: "WATCHDOG_LOG" });
+      const events = result?.events || [];
+      $("eventLog").textContent = events.length ?
+        events.slice(-30).map(entry => entry.time + "  " + entry.message).join("\n") :
+        "Событий пока нет";
+    } catch {
+      $("eventLog").textContent = "Монитор недоступен: включи ON и обнови страницу";
+    }
+  }
+
+  $("refreshLog").addEventListener("click", refreshLog);
+  $("clearLog").addEventListener("click", async () => {
+    try {
+      await chrome.tabs.sendMessage(tab.id, { type: "WATCHDOG_CLEAR_LOG" });
+      await refreshLog();
+    } catch { $("eventLog").textContent = "Не удалось очистить журнал"; }
   });
 
   $("audioFile").addEventListener("change", async () => {

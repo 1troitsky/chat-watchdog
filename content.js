@@ -18,6 +18,10 @@
   let dialogError = null;
   let sendClicks = 0;
   let lastClickAt = 0;
+  let sending = false;
+  let lastUserTurnAtSend = null;
+  const eventLog = [];
+  const lastEventSignature = new Map();
 
   function query(selector) {
     if (!selector) return [];
@@ -153,11 +157,17 @@
 
   function findSendButton(selector) {
     return query(selector).find((button) =>
-      visible(button) && !button.disabled && button.getAttribute("aria-disabled") !== "true");
+      visible(button) && !Core.isStopAction(button) &&
+      !button.disabled && button.getAttribute("aria-disabled") !== "true");
   }
 
   function hasStopButton(selector) {
-    return query(selector).some(visible);
+    if (query(selector).some(visible)) return true;
+    if (!isChatGPT()) return false;
+    // Check actual visible stop actions even when the current site uses a
+    // new selector not yet covered by our defaults.
+    return query("button[aria-label], button[title], button[data-testid]")
+      .some(button => visible(button) && Core.isStopAction(button));
   }
 
   function closeDialog() {
@@ -269,6 +279,7 @@
     }
     const fresh = errorTracker.observe(matches);
     if (fresh) {
+      recordEvent("error", "Ошибка: " + fresh.phrase);
       if (dialogRoot) {
         dialogError.textContent = "Обнаружена ошибка: " + fresh.phrase;
       } else {
@@ -279,20 +290,41 @@
     return matches.length > 0;
   }
 
-  function showToast(message) {
+  // A bounded per-tab event journal. No transcript text is stored.
+  function recordEvent(type, message) {
+    const signature = type + ":" + message;
+    const now = Date.now();
+    if (now - (lastEventSignature.get(signature) || 0) < 4000) return;
+    lastEventSignature.set(signature, now);
+    eventLog.push({
+      time: new Date(now).toLocaleTimeString("ru-RU"),
+      type,
+      message
+    });
+    if (eventLog.length > 40) eventLog.shift();
+    if (config.toastEnabled) showToast(message, type);
+  }
+
+  function showToast(message, type) {
     if (!document.body || typeof document.createElement !== "function") return;
-    const old = document.getElementById && document.getElementById("chat-watchdog-toast");
-    if (old) old.remove();
     const toast = document.createElement("div");
-    toast.id = "chat-watchdog-toast";
     toast.textContent = message;
+    toast.setAttribute("data-chat-watchdog-toast", type || "info");
     toast.style.cssText =
-      "position:fixed;bottom:90px;left:50%;transform:translateX(-50%);" +
-      "z-index:2147483646;background:#222;color:#fff;border-radius:10px;" +
-      "padding:9px 14px;font:13px system-ui,sans-serif;pointer-events:none;" +
-      "box-shadow:0 6px 28px #0005";
+      "position:fixed;bottom:88px;right:20px;max-width:min(420px,90vw);" +
+      "z-index:2147483646;background:#202124;color:#fff;border-radius:9px;" +
+      "padding:11px 15px;font:13px/1.45 system-ui,sans-serif;" +
+      "pointer-events:none;box-shadow:0 6px 28px #0005;white-space:pre-wrap;";
+    const previous = document.querySelectorAll &&
+      document.querySelectorAll("[data-chat-watchdog-toast]");
+    if (previous) for (const item of previous) item.remove();
     document.body.appendChild(toast);
-    setTimeout(() => toast.remove(), 3200);
+    setTimeout(() => toast.remove(), 4000);
+  }
+
+  function cooldownRemainingMs() {
+    return lastClickAt ? Math.max(0,
+      config.cooldownSeconds * 1000 - (Date.now() - lastClickAt)) : 0;
   }
 
   function cancelPending() {
@@ -331,45 +363,69 @@
 
   async function sendIfReady(expectedKey) {
     pending = null;
-    if (!config.enabled || location.href !== route) return;
+    if (sending || !config.enabled || location.href !== route) return;
     const selectors = currentSelectors();
     const result = latestAssistant(selectors.assistant);
     if (!result.node) return;
     const text = textOf(result.node);
     const key = messageKey(result.node, result.count, text);
-    if (key !== expectedKey || !Core.completionMatches(text, config.marker, config.markerRegex) ||
-      hasStopButton(selectors.stop) ||
-      sendGuard.alreadySent(text, latestUserTurn().logicalTurn)) return;
+    if (key !== expectedKey ||
+        !Core.completionMatches(text, config.marker, config.markerRegex) ||
+        hasStopButton(selectors.stop) ||
+        sendGuard.alreadySent(text, latestUserTurn().logicalTurn)) return;
     if (config.completionSelector && !query(config.completionSelector).some(visible)) return;
-    // A system or assistant error must preempt any automatic continuation.
     if (checkError()) return;
-    const editor = findEditor(selectors.editor);
-    if (!editor || editorText(editor)) return; // Never overwrite a human's draft.
-    fillEditor(editor, config.reply);
-    // Controlled editors can enable their submit button asynchronously.
-    // Wait briefly instead of abandoning a correctly filled message.
-    for (let attempt = 0; attempt < 10; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      if (!config.enabled || location.href !== route) return;
-      if (editorText(editor) !== config.reply) return;
-      const button = findSendButton(selectors.send);
-      if (button) {
-        if (sendGuard.alreadySent(text, latestUserTurn().logicalTurn)) return;
-        // Record before submitting, because the chat can immediately rerender
-        // or reset the composer and expose the same marker under a new node.
-        sendGuard.record(text, latestUserTurn().logicalTurn);
-        handled.add(expectedKey);
-        sendClicks++;
-        lastClickAt = Date.now();
-        button.click();
-        showToast(config.marker ? "Chat Watchdog: маркер обработан" :
-          "Chat Watchdog: ответ завершён");
 
+    const remaining = cooldownRemainingMs();
+    if (remaining) {
+      recordEvent("blocked", "Пауза между отправками: ещё " +
+        Math.ceil(remaining / 1000) + " с");
+      return;
+    }
+    const editor = findEditor(selectors.editor);
+    if (!editor || editorText(editor)) {
+      recordEvent("blocked", editor ? "Поле ввода занято" : "Поле ввода не найдено");
+      return; // Never overwrite a human draft.
+    }
+    // A stable finished reply must be the newest visible turn.
+    if (!followsUser(result.node, latestUserTurn().node)) return;
+    sending = true;
+    try {
+      fillEditor(editor, config.reply);
+      for (let attempt = 0; attempt < 10; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        if (!config.enabled || location.href !== route) return;
+        if (editorText(editor) !== config.reply) return;
+        // CRITICAL: recheck stop state on EVERY retry and immediately
+        // before click. A Stop button must NEVER be mistaken for Send.
+        if (hasStopButton(selectors.stop)) {
+          recordEvent("blocked", "Отправка отменена: появилась кнопка Stop");
+          return;
+        }
+        if (checkError() || cooldownRemainingMs()) return;
+        const current = latestAssistant(selectors.assistant);
+        if (!current.node || messageKey(current.node, current.count, textOf(current.node)) !== expectedKey ||
+            !followsUser(current.node, latestUserTurn().node) ||
+            !Core.completionMatches(textOf(current.node), config.marker, config.markerRegex)) return;
+        const button = findSendButton(selectors.send);
+        if (!button) continue;
+        if (Core.isStopAction(button) || hasStopButton(selectors.stop)) return;
+        const userTurn = latestUserTurn().logicalTurn;
+        if (sendGuard.alreadySent(text, userTurn)) return;
+        sendGuard.record(text, userTurn);
+        lastUserTurnAtSend = userTurn;
+        handled.add(expectedKey);
+        lastClickAt = Date.now();
+        sendClicks++;
+        button.click();
+        recordEvent("sent", "Отправлено: " + config.reply);
         return;
       }
+      recordEvent("blocked", "Кнопка отправки недоступна; текст оставлен в поле");
+      console.warn("Chat Watchdog: send button unavailable; follow-up left in editor.");
+    } finally {
+      sending = false;
     }
-    console.warn("Chat Watchdog: send button not available; follow-up left in editor.");
-
   }
 
   function check() {
@@ -407,9 +463,18 @@
       if (Core.completionMatches(text, config.marker, config.markerRegex)) handled.add(key);
       return;
     }
-    if (handled.has(key) || !Core.completionMatches(text, config.marker, config.markerRegex) ||
+    if (handled.has(key) || sending || !Core.completionMatches(text, config.marker, config.markerRegex) ||
       sendGuard.alreadySent(text, latestUserTurn().logicalTurn)) return;
-    if (Date.now() - stableSince < 1500 || hasStopButton(selectors.stop)) return;
+    if (Date.now() - stableSince < (config.marker ? 1500 : 4500)) return;
+    if (hasStopButton(selectors.stop)) {
+      recordEvent("blocked", "Ожидание: видна кнопка Stop");
+      return;
+    }
+    if (cooldownRemainingMs()) {
+      recordEvent("blocked", "Пауза между отправками: ещё " +
+        Math.ceil(cooldownRemainingMs() / 1000) + " с");
+      return;
+    }
     if (config.completionSelector && !query(config.completionSelector).some(visible)) return;
     if (pending && pending.key === key) return;
     cancelPending();
@@ -418,6 +483,9 @@
       timer: setTimeout(() => { sendIfReady(key).catch(console.warn); },
         config.delaySeconds * 1000)
     };
+    recordEvent("detected", config.marker ? "Найден маркер: " + config.marker +
+      " — отправка через " + config.delaySeconds + " с" :
+      "Ответ завершён — отправка через " + config.delaySeconds + " с");
   }
 
   function scheduleCheck() {
@@ -450,6 +518,9 @@
         sendGuard.alreadySent(textOf(lastAssistant), latestUserTurn().logicalTurn),
       logicalUserTurnDetected: !!latestUserTurn().logicalTurn,
       sendClicks,
+      cooldownRemainingSeconds: Math.ceil(cooldownRemainingMs() / 1000),
+      sending,
+      toastEnabled: config.toastEnabled,
       editorFound: !!editor,
       editorEmpty: !!editor && !editorText(editor),
       sendButtonFound: !!findSendButton(selectors.send),
@@ -460,6 +531,16 @@
   }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message && message.type === "WATCHDOG_LOG") {
+      sendResponse({ events: eventLog.slice() });
+      return false;
+    }
+    if (message && message.type === "WATCHDOG_CLEAR_LOG") {
+      eventLog.length = 0;
+      lastEventSignature.clear();
+      sendResponse({ ok: true });
+      return false;
+    }
     if (message && message.type === "WATCHDOG_DIAGNOSE") {
       sendResponse(diagnosticSnapshot());
       return false;

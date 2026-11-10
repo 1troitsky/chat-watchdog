@@ -17,7 +17,9 @@
     <label>Маркер завершения<input id="marker" type="text" placeholder="Пусто = каждый завершённый ответ"></label>
     <label class="regex-option"><input id="markerRegex" type="checkbox"> Regex (регулярное выражение)</label>
     <label>Сообщение для отправки<textarea id="reply" rows="2"></textarea></label>
-    <label>Пауза (секунды)<input id="delaySeconds" type="number" min="1" max="600"></label>
+    <label>Пауза после ответа (секунды)<input id="delaySeconds" type="number" min="1" max="600"></label>
+    <label>Минимум между автоотправками (секунды)<input id="cooldownSeconds" type="number" min="10" max="3600"></label>
+    <label class="regex-option"><input id="toastEnabled" type="checkbox"> Показывать уведомления о событиях</label>
     <label>Фразы ошибок (по одной в строке)<textarea id="errorWords" rows="4"></textarea></label>
     <label>Звуковой сигнал
       <input id="audioFile" type="file" accept="audio/*">
@@ -33,6 +35,14 @@
       <label>Кнопка остановки<input id="stopSelector" type="text" placeholder="Определяется автоматически"></label>
       <label>Элемент завершения<input id="completionSelector" type="text" placeholder="Не требуется"></label>
       <label>Элемент ошибки<input id="errorSelector" type="text" placeholder="Уведомления об ошибках"></label>
+    </details>
+    <details>
+      <summary>Журнал событий</summary>
+      <div class="log-buttons">
+        <button id="refreshLog" type="button">Обновить</button>
+        <button id="clearLog" type="button">Очистить</button>
+      </div>
+      <pre id="eventLog" aria-live="polite">Журнал не загружен</pre>
     </details>
     <p id="status" role="status"></p>
   </main>

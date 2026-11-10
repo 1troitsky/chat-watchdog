@@ -4,12 +4,43 @@ importScripts("audio-db.js");
 
 const key = (tabId) => "tab:" + tabId;
 const audioEpochs = new Map();
+const sendClaimQueues = new Map();
+const sentKey = (tabId) => "watchdog:sent:" + tabId;
 let creatingOffscreen;
 
 function nextAudioEpoch(tabId) {
   const epoch = (audioEpochs.get(tabId) || 0) + 1;
   audioEpochs.set(tabId, epoch);
   return epoch;
+}
+
+// Atomic per-tab claims across all injected scripts. The ledger survives
+// service-worker suspension and content-script reinjection during this session.
+async function claimSend(tabId, token, sender) {
+  if (typeof token !== "string" || !token || token.length > 2048) {
+    return { ok: false, reason: "invalid-token" };
+  }
+  const previous = sendClaimQueues.get(tabId) || Promise.resolve();
+  const work = previous.catch(() => {}).then(async () => {
+    const keys = [key(tabId), sentKey(tabId)];
+    const items = await chrome.storage.session.get(keys);
+    const config = items[key(tabId)];
+    if (!config || config.enabled !== true || config.mode === "errors" ||
+        !sender.tab?.url || new URL(sender.tab.url).origin !== config.origin) {
+      return { ok: false, reason: "inactive" };
+    }
+    const prior = items[sentKey(tabId)];
+    const seen = prior && prior.origin === config.origin && Array.isArray(prior.tokens) ?
+      prior.tokens : [];
+    if (seen.includes(token)) return { ok: false, reason: "duplicate" };
+    await chrome.storage.session.set({
+      [sentKey(tabId)]: { origin: config.origin, tokens: [...seen.slice(-499), token] }
+    });
+    return { ok: true };
+  });
+  sendClaimQueues.set(tabId, work);
+  try { return await work; }
+  finally { if (sendClaimQueues.get(tabId) === work) sendClaimQueues.delete(tabId); }
 }
 
 async function offscreenExists() {
@@ -64,6 +95,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (!sender.tab || !Number.isInteger(sender.tab.id)) return false;
   const tabId = sender.tab.id;
+  if (message.type === "CLAIM_SEND") {
+    claimSend(tabId, message.token, sender)
+      .then(sendResponse)
+      .catch(() => sendResponse({ ok: false, reason: "storage-error" }));
+    return true;
+  }
   if (message.type === "GET_CONFIG") {
     chrome.storage.session.get(key(tabId))
       .then((items) => sendResponse(items[key(tabId)] || null))
@@ -108,7 +145,8 @@ chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   stopTabAudio(tabId).catch(() => {});
-  chrome.storage.session.remove(key(tabId)).catch(() => {});
+  chrome.storage.session.remove([key(tabId), sentKey(tabId)]).catch(() => {});
+  sendClaimQueues.delete(tabId);
   ChatWatchdogAudio.remove(tabId).catch(() => {});
   audioEpochs.delete(tabId);
 });

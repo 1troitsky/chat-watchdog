@@ -71,23 +71,28 @@
     if (pattern.startsWith("/")) {
       const last = pattern.lastIndexOf("/");
       if (last > 0 && /^[a-z]*$/i.test(pattern.slice(last + 1))) {
-        flags = pattern.slice(last + 1).replace(/[gy]/g, "");
+        // Multiline anchors would permit matching the middle of a reply.
+        flags = pattern.slice(last + 1).replace(/[gym]/g, "");
         pattern = pattern.slice(1, last);
       }
     }
     if (!pattern || pattern.length > 1000) {
       throw new Error("Regex должен содержать от 1 до 1000 символов");
     }
-    // Lookahead checks real end of string even with the multiline flag.
-    return new RegExp("(?:" + pattern + ")\\s*(?![\\s\\S])", flags);
+    // Accept a marker at the START or END of the actual assistant answer,
+    // never an incidental mention in its middle. Multiline mode is disabled.
+    return new RegExp("(?:^\\s*(?:" + pattern + ")|(?:" + pattern + ")\\s*(?![\\s\\S]))", flags);
   }
 
   function hasMarker(text, marker, markerRegex = false) {
     if (!text || !marker) return false;
-    const value = String(text).trimEnd();
-    if (!markerRegex) return value.endsWith(String(marker).trim());
+    const value = String(text).trim();
+    const expected = String(marker).trim();
+    if (!markerRegex) return value.startsWith(expected) || value.endsWith(expected);
     try {
-      return compileMarker(marker).test(value.slice(-4000));
+      // Do not slice from the end: that makes the beginning of a suffix
+      // look like the beginning of the complete answer.
+      return compileMarker(marker).test(value);
     } catch {
       return false;
     }

@@ -135,6 +135,14 @@
     return { node: nodes[nodes.length - 1], count: nodes.length, source: result.source };
   }
 
+  function sendToken(node, text) {
+    // One automatic submission per originating USER turn. React can replace
+    // every assistant element, but this logical turn stays unchanged.
+    const user = latestUserTurn();
+    const fallback = Core.userTurnFingerprint(0, text);
+    return route + "|turn:" + (user.logicalTurn || "answer:" + fallback);
+  }
+
   function messageKey(node, count, text) {
     const container = typeof node.closest === "function" &&
       node.closest("[data-message-id], [data-content-search-unit-key], [data-turn-key]");
@@ -441,6 +449,33 @@
             Core.isStopAction(button) || hasStopButton(selectors.stop)) return;
         const userTurn = latestUserTurn().logicalTurn;
         if (sendGuard.alreadySent(text, userTurn)) return;
+        // The background worker owns the deduplication ledger for this tab.
+        // It serializes claims and persists them in chrome.storage.session,
+        // preventing another content-script instance from sending as well.
+        const token = sendToken(current.node, text);
+        let claim;
+        try {
+          claim = await chrome.runtime.sendMessage({ type: "CLAIM_SEND", token });
+        } catch (error) {
+          recordEvent("blocked", "Отправка отменена: нет подтверждения защиты от дублей");
+          return; // Fail closed, not open.
+        }
+        if (!claim || !claim.ok) {
+          recordEvent("blocked", "Повторная отправка заблокирована");
+          return;
+        }
+        // Claim may take time: conditions can change during the await.
+        // A claim is intentionally never rolled back, even if UI changed;
+        // preventing duplicate Sends is more important than retrying blindly.
+        if (!config.enabled || config.mode !== "auto" || modeEpoch !== expectedModeEpoch ||
+            location.href !== route || hasStopButton(selectors.stop) ||
+            editorText(editor) !== config.reply ||
+            !findSendButton(selectors.send)) return;
+        const verified = latestAssistant(selectors.assistant);
+        if (!verified.node ||
+            !followsUser(verified.node, latestUserTurn().node) ||
+            sendToken(verified.node, textOf(verified.node)) !== token ||
+            !Core.completionMatches(textOf(verified.node), config.marker, config.markerRegex)) return;
         sendGuard.record(text, userTurn);
         lastUserTurnAtSend = userTurn;
         handled.add(expectedKey);

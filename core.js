@@ -7,7 +7,8 @@
     marker: "!!!ГОТОВО!!!",
     markerRegex: false,
     reply: "Ок, продолжаем",
-    delaySeconds: 5,
+    delaySeconds: 30,
+    delaySecondsVersion: 2,
     cooldownSeconds: 45,
     toastEnabled: true,
     errorWordsVersion: 1,
@@ -42,7 +43,13 @@
     config.mode = config.mode === "errors" ? "errors" : "auto";
     config.markerRegex = config.markerRegex === true;
     config.toastEnabled = config.toastEnabled !== false;
-    config.delaySeconds = Math.max(1, Math.min(600, Number(config.delaySeconds) || 5));
+    config.delaySeconds = Math.max(1, Math.min(600, Number(config.delaySeconds) || 30));
+    // Migrate the previous default (5s) saved in existing per-tab settings.
+    // Keep explicit new 5s choices and all non-default custom delays intact.
+    if (Number(input.delaySeconds) === 5 && !input.delaySecondsVersion) {
+      config.delaySeconds = 30;
+    }
+    config.delaySecondsVersion = 2;
     config.cooldownSeconds = Math.max(10, Math.min(3600, Number(config.cooldownSeconds) || 45));
     for (const key of Object.keys(DEFAULTS)) {
       if (typeof DEFAULTS[key] === "string") {

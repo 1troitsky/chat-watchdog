@@ -146,7 +146,8 @@ function createHarness(options = {}) {
         markerRegex: options.markerRegex === true,
         marker: options.marker !== undefined ? options.marker : "!!!ГОТОВО!!!",
         reply: "Ок, продолжаем",
-        delaySeconds: 5
+        delaySeconds: options.delaySeconds !== undefined ? options.delaySeconds : 5,
+        delaySecondsVersion: 2
       } : null;
       }
     } }
@@ -203,7 +204,8 @@ function createHarness(options = {}) {
       messageListener({ type: "WATCHDOG_CONFIG", config: {
         enabled: true, mode,
         marker: options.marker !== undefined ? options.marker : "!!!ГОТОВО!!!",
-        delaySeconds: 5, cooldownSeconds: 45,
+        delaySeconds: options.delaySeconds !== undefined ? options.delaySeconds : 5,
+        delaySecondsVersion: 2, cooldownSeconds: 45,
         reply: "Ок, продолжаем"
       } });
     },
@@ -535,4 +537,19 @@ test("persistent cooldown prevents completion timers even after local content re
     assert.equal(instance.clicks(), 0);
     assert.equal(instance.sentRuntimeMessages.filter(x => x === "CLAIM_SEND").length, 0);
   }
+});
+
+
+test("30-second post-marker delay never sends at 5 or 29 seconds", async () => {
+  const chat = createHarness({ delaySeconds: 30 });
+  await chat.baseline();
+  await chat.advance(1600);
+  chat.poll();
+  await chat.advance(5000);
+  chat.poll();
+  assert.equal(chat.clicks(), 0);
+  await chat.advance(24000);
+  assert.equal(chat.clicks(), 0);
+  await chat.advance(250);
+  assert.equal(chat.clicks(), 1);
 });

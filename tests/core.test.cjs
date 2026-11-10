@@ -5,9 +5,18 @@ const Core = require("../core.js");
 test("defaults are safe and disabled", () => {
   const value = Core.normalize();
   assert.equal(value.enabled, false);
-  assert.equal(value.delaySeconds, 5);
+  assert.equal(value.delaySeconds, 30);
   assert.equal(value.reply, "Ок, продолжаем");
 });
+test("old saved five-second default migrates to 30 seconds, custom delays stay unchanged", () => {
+  assert.equal(Core.normalize({ delaySeconds: 5 }).delaySeconds, 30);
+  assert.equal(Core.normalize({ delaySeconds: 5, delaySecondsVersion: 2 }).delaySeconds, 5);
+  assert.equal(Core.normalize({ delaySeconds: 13 }).delaySeconds, 13);
+  const upgraded = Core.normalize({ delaySeconds: 5 });
+  assert.equal(Core.normalize(upgraded).delaySeconds, 30);
+  assert.equal(upgraded.delaySecondsVersion, 2);
+});
+
 test("limits the delay and normalizes strings", () => {
   assert.equal(Core.normalize({ delaySeconds: -9 }).delaySeconds, 1);
   assert.equal(Core.normalize({ delaySeconds: 9999 }).delaySeconds, 600);

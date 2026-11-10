@@ -148,6 +148,23 @@ test("empty completion marker is intentional and not replaced with a default", (
   assert.equal(Core.completionMatches("   ", config.marker, config.markerRegex), false);
 });
 
+test("requested assistant alert phrases match with exact exclamation points", () => {
+  const expected = [
+    "!!!ЕСТЬ ЗАДАНИЕ ДЛЯ АГЕНТА!!!",
+    "!!!ЖДУ РЕШЕНИЕ!!!",
+    "!!!У НАС ПРОБЛЕМА!!!",
+    "!!НУЖНА ЛОКАЛЬНАЯ ПРОВЕРКА!!!"
+  ];
+  for (const phrase of expected) {
+    assert.ok(Core.DEFAULTS.errorWords.split("\n").includes(phrase));
+    assert.equal(Core.findErrorLine("Текст ответа\n" + phrase, Core.DEFAULTS.errorWords), phrase);
+  }
+  assert.equal(Core.findErrorLine(
+    "Например, !!!У НАС ПРОБЛЕМА!!! может использоваться как маркер.",
+    Core.DEFAULTS.errorWords
+  ), null);
+});
+
 test("upgrading previous session settings adds new alert markers once", () => {
   const old = Core.normalize({
     errorWords: "Ошибка соединения",

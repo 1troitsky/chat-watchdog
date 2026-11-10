@@ -9,7 +9,7 @@ const contentSource = fs.readFileSync(path.join(__dirname, "..", "content.js"), 
 
 // Exercise the actual content script. ChatGPT can replace an assistant DOM
 // element without creating a new assistant reply.
-function createHarness() {
+function createHarness(options = {}) {
   let time = 0;
   let timerId = 0;
   let clicks = 0;
@@ -33,7 +33,7 @@ function createHarness() {
   }
 
   const assistantNode = () => ({
-    innerText: "!!!ГОТОВО!!!",
+    innerText: options.replyText || "!!!ГОТОВО!!!",
     getClientRects: () => [1],
     closest: () => null,
     contains: () => false
@@ -98,7 +98,7 @@ function createHarness() {
       onMessage: { addListener() {} },
       sendMessage: async (msg) => msg.type === "GET_CONFIG" ? {
         enabled: true,
-        marker: "!!!ГОТОВО!!!",
+        marker: options.marker !== undefined ? options.marker : "!!!ГОТОВО!!!",
         reply: "Ок, продолжаем",
         delaySeconds: 5
       } : null
@@ -152,6 +152,23 @@ function createHarness() {
     stopClicks: () => stopClicks
   };
 }
+
+test("markerless mode requires longer stable text and still sends only once", async () => {
+  const chat = createHarness({ marker: "", replyText: "Работа завершена." });
+  await chat.baseline();
+  await chat.advance(2000);
+  chat.poll();
+  assert.equal(chat.clicks(), 0);
+  await chat.advance(3000);
+  chat.poll(); // Stable 5 seconds, now we may start 5-second delay.
+  await chat.advance(5000);
+  await chat.advance(250);
+  assert.equal(chat.clicks(), 1);
+  await chat.advance(46000);
+  chat.poll();
+  await chat.advance(5000);
+  assert.equal(chat.clicks(), 1);
+});
 
 test("a React rerender of a submitted marker cannot send a second follow-up", async () => {
   const chat = createHarness();

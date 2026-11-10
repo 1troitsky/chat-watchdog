@@ -27,12 +27,15 @@ function createHarness(options = {}) {
   let stopClicks = 0;
   const jobs = new Map();
 
-  function userNode(text) {
+  function userNode(text, afterReplyId = 0) {
     return {
       innerText: text,
+      afterReplyId,
       getClientRects: () => [1],
       compareDocumentPosition(other) {
-        return other === response ? 4 : 2;
+        // The latest user bubble follows the preceding answer but precedes
+        // the next generated assistant reply. Simulate the real DOM ordering.
+        return other === response && replyId > afterReplyId ? 4 : 2;
       },
       contains: () => false
     };
@@ -196,10 +199,10 @@ function createHarness(options = {}) {
   return {
     advance, baseline, poll, sendFirst, diagnose,
     clicks: () => clicks,
-    nextUser() { userMessages.push(userNode("Ок, продолжаем")); },
+    nextUser() { userMessages.push(userNode("Ок, продолжаем", replyId)); },
     nextAssistant() { replyId++; response = assistantNode(); assistantHistory.push(response); },
     rerenderOldTurn() {
-      userMessages = userMessages.map(item => userNode(item.innerText));
+      userMessages = userMessages.map(item => userNode(item.innerText, item.afterReplyId));
       response = assistantNode();
       assistantHistory[assistantHistory.length - 1] = response;
     },

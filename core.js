@@ -11,8 +11,8 @@
     delaySecondsVersion: 2,
     cooldownSeconds: 45,
     toastEnabled: true,
-    errorWordsVersion: 1,
-    errorWords: "Соединение прервано\nОшибка соединения\nНет ответа от ChatGPT. Проверьте подключение к интернету\nВы достигли лимита\nВы достигни лимита\nConnection interrupted\nNetwork error\nRate limit reached\n!!!ЕСТЬ ЗАДАНИЕ ДЛЯ АГЕНТА!!!\n!!!ЖДУ РЕШЕНИЕ!!!\n!!!У НАС ПРОБЛЕМА!!!\n!!НУЖНА ЛОКАЛЬНАЯ ПРОВЕРКА!!!",
+    errorWordsVersion: 2,
+    errorWords: "Соединение прервано\nОшибка соединения\nОшибка в потоке сообщений\nНет ответа от ChatGPT. Проверьте подключение к интернету\nВы достигли лимита\nВы достигни лимита\nConnection interrupted\nNetwork error\nRate limit reached\n!!!ЕСТЬ ЗАДАНИЕ ДЛЯ АГЕНТА!!!\n!!!ЖДУ РЕШЕНИЕ!!!\n!!!У НАС ПРОБЛЕМА!!!\n!!НУЖНА ЛОКАЛЬНАЯ ПРОВЕРКА!!!",
     assistantSelector: "",
     editorSelector: "",
     sendSelector: "",
@@ -29,6 +29,9 @@
     "!!!ЖДУ РЕШЕНИЕ!!!",
     "!!!У НАС ПРОБЛЕМА!!!",
     "!!НУЖНА ЛОКАЛЬНАЯ ПРОВЕРКА!!!"
+  ]);
+  const ERROR_PHRASES_V2 = Object.freeze([
+    "Ошибка в потоке сообщений"
   ]);
 
   function normalize(value) {
@@ -64,7 +67,14 @@
         if (!present.includes(phrase)) config.errorWords += "\n" + phrase;
       }
     }
-    config.errorWordsVersion = 1;
+    if (typeof input.errorWords === "string" &&
+        Number(input.errorWordsVersion || 0) < 2) {
+      const present = config.errorWords.split(/\r?\n/).map(s => s.trim());
+      for (const phrase of ERROR_PHRASES_V2) {
+        if (!present.includes(phrase)) config.errorWords += "\n" + phrase;
+      }
+    }
+    config.errorWordsVersion = 2;
     config.marker = config.marker.trim();
     config.reply = config.reply.trim() || DEFAULTS.reply;
     return config;

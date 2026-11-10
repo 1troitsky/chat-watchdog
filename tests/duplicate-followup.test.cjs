@@ -594,3 +594,19 @@ test("the expired timer reports Stop as the cancellation reason, not a fake send
   assert.match(chat.diagnose().lastAutoDecision, /Stop/);
   assert.equal(chat.sentRuntimeMessages.filter(x => x === "CLAIM_SEND").length, 0);
 });
+
+
+test("user turn observed before timeout has no Watchdog claim and cancels the scheduled send", async () => {
+  const chat = createHarness({ delaySeconds: 30 });
+  await chat.baseline();
+  await chat.advance(1600);
+  chat.poll();
+  chat.nextUser();
+  await chat.advance(9000);
+  chat.poll();
+  assert.equal(chat.sentRuntimeMessages.filter(x => x === "WATCHDOG_USER_TURN").length, 1);
+  await chat.advance(30000);
+  chat.poll();
+  assert.equal(chat.clicks(), 0);
+  assert.equal(chat.sentRuntimeMessages.filter(x => x === "CLAIM_SEND").length, 0);
+});

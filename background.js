@@ -174,6 +174,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch(() => sendResponse({ ok: false, reason: "storage-error" }));
     return true;
   }
+  if (message.type === "WATCHDOG_USER_TURN") {
+    chrome.storage.session.get(key(tabId))
+      .then(items => {
+        const config = items[key(tabId)];
+        if (!config?.enabled || !sender.tab?.url ||
+            new URL(sender.tab.url).origin !== config.origin) return;
+        const source = typeof message.observation === "string" &&
+          /^(input|enter|send-click|send-pointer|submit):(trusted|synthetic)$|^no-recent-composer-event$/.test(message.observation) ?
+          message.observation : "unknown";
+        return auditSend({
+          tabId, url: sender.tab.url, event: "user-turn",
+          outcome: source, mode: config.mode
+        });
+      })
+      .then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false }));
+    return true;
+  }
   if (message.type === "WATCHDOG_SEND_CLICKED") {
     chrome.storage.session.get(key(tabId))
       .then(items => auditSend({

@@ -28,6 +28,8 @@
   let sending = false;
   let modeEpoch = 0;
   let lastUserTurnAtSend = null;
+  let lastObservedUserTurn = null;
+  let lastComposerInteraction = null;
   let lastAutoDecision = "Проверка ещё не проводилась";
   let lastAutoDecisionAt = null;
   const eventLog = [];
@@ -83,6 +85,30 @@
       };
     }
     return { node: null, logicalTurn: null };
+  }
+
+  // Observe actual user-turn appearances independently from our own Send
+  // mechanism. This records metadata only; never inspect, log, or persist
+  // user message text. An observed DOM turn is NOT proof a network send.
+  function observeUserTurn() {
+    const current = latestUserTurn().logicalTurn;
+    if (!current) return;
+    if (lastObservedUserTurn === null) {
+      lastObservedUserTurn = current;
+      return;
+    }
+    if (lastObservedUserTurn === current) return;
+    lastObservedUserTurn = current;
+    const gesture = lastComposerInteraction;
+    const recent = gesture && Date.now() - gesture.at < 15000;
+    const source = recent ?
+      gesture.event + ":" + (gesture.trusted ? "trusted" : "synthetic") :
+      "no-recent-composer-event";
+    recordEvent("user-turn", "В DOM появился новый ход пользователя; ввод: " + source);
+    chrome.runtime.sendMessage({
+      type: "WATCHDOG_USER_TURN",
+      observation: source
+    }).catch(() => {});
   }
 
   function followsUser(assistant, user) {
@@ -196,6 +222,35 @@
       visible(button) && !Core.isStopAction(button) &&
       !button.disabled && button.getAttribute("aria-disabled") !== "true");
   }
+
+  // Chrome exposes isTrusted on UI events. It is supporting evidence, not
+  // proof of human intent, so label it explicitly instead of guessing.
+  function trackComposerInteraction(event) {
+    if (!config.enabled || !event || !event.target) return;
+    const selectors = currentSelectors();
+    const editor = findEditor(selectors.editor);
+    const button = findSendButton(selectors.send);
+    const within = (element, target) => !!element &&
+      (element === target || typeof element.contains === "function" &&
+        element.contains(target));
+    const inEditor = within(editor, event.target);
+    const onSend = within(button, event.target);
+    let type = null;
+    if (event.type === "keydown" && inEditor && event.key === "Enter")
+      type = "enter";
+    else if (event.type === "input" && inEditor) type = "input";
+    else if ((event.type === "click" || event.type === "pointerdown") && onSend)
+      type = event.type === "click" ? "send-click" : "send-pointer";
+    else if (event.type === "submit" && (inEditor ||
+      (editor && typeof event.target.contains === "function" &&
+        event.target.contains(editor)))) type = "submit";
+    if (type) lastComposerInteraction = {
+      event: type, trusted: event.isTrusted === true, at: Date.now()
+    };
+  }
+
+  for (const name of ["input", "keydown", "pointerdown", "click", "submit"])
+    document.addEventListener(name, trackComposerInteraction, true);
 
   function hasStopButton(selector) {
     if (query(selector).some(visible)) return true;
@@ -668,6 +723,8 @@
   function check() {
     if (!config.enabled) return;
     if (route !== location.href) {
+      lastObservedUserTurn = null;
+      lastComposerInteraction = null;
       closeDialog();
       errorTracker.reset();
       acknowledgedAssistantAlerts.clear();
@@ -679,6 +736,7 @@
       handled = new Set();
       cancelPending();
     }
+    observeUserTurn();
     if (checkError()) {
       cancelPending();
       return;
@@ -830,6 +888,8 @@
       }
     }
     if (!config.enabled) {
+      lastObservedUserTurn = null;
+      lastComposerInteraction = null;
       cooldownHydrated = false;
       hydrationEpoch++;
       cancelPending();

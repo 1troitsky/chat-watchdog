@@ -46,6 +46,13 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }) {
         { tab: { id: tabId, url } }, resolve), true);
     });
   }
+  async function userTurn(tabId = 7, url = "https://chatgpt.com/c/a",
+      observation = "no-recent-composer-event") {
+    return new Promise(resolve => {
+      assert.equal(onMessage({ type: "WATCHDOG_USER_TURN", observation },
+        { tab: { id: tabId, url } }, resolve), true);
+    });
+  }
   async function state(tabId = 7, url = "https://chatgpt.com/c/a") {
     return new Promise(resolve => {
       assert.equal(onMessage({ type: "GET_SEND_STATE" },
@@ -67,7 +74,7 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }) {
       enabled: true, mode: "auto", origin: "https://chatgpt.com", ...overrides
     });
   }
-  return { claim, clicked, state, configure, saved, clock,
+  return { claim, clicked, userTurn, state, configure, saved, clock,
     get onUpdated() { return onUpdated; }, get onRemoved() { return onRemoved; } };
 }
 
@@ -209,4 +216,18 @@ test("shared audit shows accepted/blocked claims and click caller across tabs wi
   assert.equal(events[2].mode, "OFF");
   assert.equal(JSON.stringify(events).includes("private-token"), false);
   assert.equal(JSON.stringify(events).includes("abcXYZ"), true); // Only last six chars are kept.
+});
+
+
+test("user-turn observation is logged independently from send claims, without chat text", async () => {
+  const app = createWorker();
+  app.configure(7);
+  assert.equal((await app.userTurn(7, "https://chatgpt.com/c/a", "no-recent-composer-event")).ok, true);
+  assert.equal((await app.userTurn(7, "https://chatgpt.com/c/a", "send-click:trusted")).ok, true);
+  const audit = app.saved.get("watchdog:send-audit");
+  assert.equal(audit.length, 2);
+  assert.deepEqual(Array.from(audit.map(e => e.event)), ["user-turn", "user-turn"]);
+  assert.equal(audit[0].outcome, "no-recent-composer-event");
+  assert.equal(audit[1].outcome, "send-click:trusted");
+  assert.equal(app.saved.has("watchdog:conversation:https://chatgpt.com/c/a"), false);
 });

@@ -6,7 +6,7 @@ const vm = require("node:vm");
 
 const background = fs.readFileSync(path.join(__dirname, "..", "background.js"), "utf8");
 
-function createWorker(saved = new Map()) {
+function createWorker(saved = new Map(), clock = { now: 1000000 }) {
   let onMessage;
   let onUpdated;
   let onRemoved;
@@ -36,6 +36,7 @@ function createWorker(saved = new Map()) {
   };
   vm.runInNewContext(background, {
     chrome, URL, Map, Promise,
+    Date: class extends Date { static now() { return clock.now; } },
     importScripts() {},
     console
   });
@@ -54,7 +55,8 @@ function createWorker(saved = new Map()) {
       enabled: true, mode: "auto", origin: "https://chatgpt.com", ...overrides
     });
   }
-  return { claim, configure, saved, get onUpdated() { return onUpdated; }, get onRemoved() { return onRemoved; } };
+  return { claim, configure, saved, clock,
+    get onUpdated() { return onUpdated; }, get onRemoved() { return onRemoved; } };
 }
 
 test("one background claim wins even with twenty simultaneous senders", async () => {
@@ -70,11 +72,14 @@ test("one background claim wins even with twenty simultaneous senders", async ()
 
 test("restarting background service worker cannot replay an already claimed turn", async () => {
   const saved = new Map();
-  const first = createWorker(saved);
+  const clock = { now: 1000000 };
+  const first = createWorker(saved, clock);
   first.configure();
   assert.equal((await first.claim("chat/a|user:42")).ok, true);
-  const restarted = createWorker(saved);
+  const restarted = createWorker(saved, clock);
   assert.equal((await restarted.claim("chat/a|user:42")).ok, false);
+  assert.equal((await restarted.claim("chat/a|user:43")).reason, "cooldown");
+  clock.now += 46000;
   assert.equal((await restarted.claim("chat/a|user:43")).ok, true);
 });
 
@@ -88,6 +93,21 @@ test("claims are rejected in error-only mode, when OFF, or from the wrong origin
   assert.equal((await app.claim("a", 7, "https://example.com/c/a")).ok, false);
   assert.equal((await app.claim("")).ok, false);
   assert.equal((await app.claim("a".repeat(2049))).ok, false);
+});
+
+test("global cooldown blocks distinct tokens from multiple observers", async () => {
+  const app = createWorker();
+  app.configure(7, { cooldownSeconds: 45 });
+  assert.equal((await app.claim("answer-one")).ok, true);
+  const second = await app.claim("answer-two");
+  assert.equal(second.reason, "cooldown");
+  assert.equal(second.retryAfterSeconds, 45);
+  app.clock.now += 44999;
+  assert.equal((await app.claim("answer-two")).reason, "cooldown");
+  app.clock.now += 1;
+  assert.equal((await app.claim("answer-two")).ok, true);
+  app.clock.now += 90000;
+  assert.equal((await app.claim("answer-one")).reason, "duplicate");
 });
 
 test("tab A and tab B have independent claims", async () => {

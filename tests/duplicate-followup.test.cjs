@@ -14,6 +14,7 @@ function createHarness(options = {}) {
   let timerId = 0;
   let clicks = 0;
   let response = null;
+  let replyId = 1;
   let poll;
   let messageListener;
   const sentRuntimeMessages = [];
@@ -36,12 +37,20 @@ function createHarness(options = {}) {
     };
   }
 
-  const assistantNode = () => ({
-    innerText: options.replyText || "!!!ГОТОВО!!!",
-    getClientRects: () => [1],
-    closest: () => null,
-    contains: () => false
-  });
+  const assistantNode = () => {
+    const id = "stable-assistant-reply-" + replyId;
+    const node = {
+      innerText: options.replyText || "!!!ГОТОВО!!!",
+      getClientRects: () => [1],
+      closest(selector) {
+        if (options.noReplyIds) return null;
+        return selector === "[data-turn-key]" ? node : null;
+      },
+      getAttribute(name) { return name === "data-turn-key" ? id : null; },
+      contains: () => false
+    };
+    return node;
+  };
   const editor = {
     tagName: "DIV",
     isContentEditable: true,
@@ -177,7 +186,7 @@ function createHarness(options = {}) {
     advance, baseline, poll, sendFirst,
     clicks: () => clicks,
     nextUser() { userMessages.push(userNode("Ок, продолжаем")); },
-    nextAssistant() { response = assistantNode(); },
+    nextAssistant() { replyId++; response = assistantNode(); },
     rerenderOldTurn() {
       userMessages = userMessages.map(item => userNode(item.innerText));
       response = assistantNode();
@@ -346,6 +355,45 @@ test("real duplicate: React rerenders BOTH user and assistant DOM nodes", async 
   chat.poll();
   await chat.advance(5000);
   await chat.advance(250);
+  assert.equal(chat.clicks(), 1);
+});
+
+test("a new user bubble and React repaint cannot resend the same assistant reply", async () => {
+  const chat = createHarness();
+  await chat.sendFirst();
+  chat.nextUser();
+  chat.rerenderOldTurn();
+  await chat.advance(90000);
+  chat.poll();
+  await chat.advance(7000);
+  chat.poll();
+  assert.equal(chat.clicks(), 1);
+  assert.equal(chat.sentRuntimeMessages.filter(x => x === "CLAIM_SEND").length, 1);
+});
+
+test("identical marker on a different assistant reply with its own turn ID can send", async () => {
+  const chat = createHarness();
+  await chat.sendFirst();
+  chat.nextUser();
+  chat.nextAssistant();
+  await chat.advance(46000);
+  chat.poll();
+  await chat.advance(1600);
+  chat.poll();
+  await chat.advance(5000);
+  await chat.advance(250);
+  assert.equal(chat.clicks(), 2);
+});
+
+test("ID-less fallback fails closed on a replayed identical assistant reply", async () => {
+  const chat = createHarness({ noReplyIds: true });
+  await chat.sendFirst();
+  chat.nextUser();
+  chat.rerenderOldTurn();
+  await chat.advance(90000);
+  chat.poll();
+  await chat.advance(7000);
+  chat.poll();
   assert.equal(chat.clicks(), 1);
 });
 

@@ -26,7 +26,7 @@ For any local MP3 file, use the **file picker**. A file:// URL alone is not perm
 
 ## Safety and limitations
 
-- The extension is **OFF by default**. Enabling skips an already-completed assistant response to avoid replaying old tasks; a new conversation with no responses is armed immediately, including for a very short first response.
+- The extension is **OFF by default**. The global cooldown is enforced across content-script instances within one installed extension. If several independent copies of Chat Watchdog are enabled in Chrome, disable all but one: different extension IDs do not share storage. Enabling skips an already-completed assistant response to avoid replaying old tasks; a new conversation with no responses is armed immediately, including for a very short first response.
 - It never overwrites a nonempty input draft.
 - Error-only mode leaves the chat's composer untouched and preserves existing error detection, dialog, audio and event journal. The main ON/OFF toggle remains independent of the mode selection.
 - Before clicking Send, the extension obtains a one-time **assistant-reply ID** claim from the background service worker, serialized across content-script instances and persisted in Chrome session storage. The ID is tied to the assistant reply (not the user's most recent message), so sending a new user bubble cannot rearm an old answer. A second independently enforced **global per-tab cooldown** also prevents rapid duplicates, even if another observer produces a different token.

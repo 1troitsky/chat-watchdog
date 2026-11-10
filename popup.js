@@ -130,6 +130,7 @@
         "Ход пользователя распознан: " + (result.logicalUserTurnDetected ? "да" : "нет"),
         "Маркер уже отправлен: " + (result.markerAlreadySent ? "ДА" : "НЕТ"),
         "Нажатий Отправить монитором: " + result.sendClicks,
+        "Запомнено ответов ИИ: " + result.rememberedAssistantReplies,
         "Пауза до следующей отправки: " + result.cooldownRemainingSeconds + " с",
         "Отправка в процессе: " + (result.sending ? "да" : "нет"),
         "Редактор: " + (result.editorFound ? "найден" : "НЕ НАЙДЕН"),

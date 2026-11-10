@@ -81,8 +81,9 @@ test("a short first assistant reply after enabling an empty chat is submitted", 
         jobs.delete(key);
         task.fn();
       }
-      await Promise.resolve();
+      for (let i = 0; i < 12; i++) await Promise.resolve();
     }
+    for (let i = 0; i < 12; i++) await Promise.resolve();
   }
   await advance(5000); // configured delay
   await advance(250);  // React-controlled editor settle interval

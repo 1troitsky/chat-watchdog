@@ -12,9 +12,10 @@ test("limits the delay and normalizes strings", () => {
   assert.equal(Core.normalize({ delaySeconds: -9 }).delaySeconds, 1);
   assert.equal(Core.normalize({ delaySeconds: 9999 }).delaySeconds, 600);
 });
-test("only matches marker at the end", () => {
+test("matches marker only on the edges of an answer", () => {
   assert.equal(Core.hasMarker("Answer\n!!!ГОТОВО!!!", "!!!ГОТОВО!!!"), true);
-  assert.equal(Core.hasMarker("!!!ГОТОВО!!!\nStill working", "!!!ГОТОВО!!!"), false);
+  assert.equal(Core.hasMarker("!!!ГОТОВО!!!\nStill working", "!!!ГОТОВО!!!"), true);
+  assert.equal(Core.hasMarker("Answer\n!!!ГОТОВО!!!\nMore", "!!!ГОТОВО!!!"), false);
 });
 test("literal completion marker matches at the start OR end, never the middle", () => {
   assert.equal(Core.hasMarker("!!!ГОТОВО!!!\nПодробный отчёт", "!!!ГОТОВО!!!"), true);
@@ -40,7 +41,8 @@ test("regex mode recognizes both development report endings and an explicit mark
 });
 test("regex /pattern/i uses flags and anchors all alternatives", () => {
   assert.equal(Core.hasMarker("ГОТОВО!", "/готово!/i", true), true);
-  assert.equal(Core.hasMarker("ГОТОВО! но дальше ещё текст", "/готово!/i", true), false);
+  assert.equal(Core.hasMarker("ГОТОВО! но дальше ещё текст", "/готово!/i", true), true);
+  assert.equal(Core.hasMarker("В середине ГОТОВО! но дальше ещё текст", "/готово!/i", true), false);
   assert.equal(Core.hasMarker("hello more text", "hello|text", true), true);
   assert.equal(Core.hasMarker("hello more text still going", "hello|text", true), true);
   assert.equal(Core.hasMarker("somewhere hello more text still going", "hello|text", true), false);

@@ -105,9 +105,9 @@ function createChat(variant, userOwnsMarker = false) {
         jobs.delete(id);
         job.fn();
       }
-      await Promise.resolve();
-      await Promise.resolve();
+      for (let i = 0; i < 12; i++) await Promise.resolve();
     }
+    for (let i = 0; i < 12; i++) await Promise.resolve();
   }
   async function start() {
     await Promise.resolve();

@@ -13,7 +13,6 @@ function createHarness(options = {}) {
   let time = 0;
   let timerId = 0;
   let clicks = 0;
-  let initialConfigResolve;
   let response = null;
   let replyId = 1;
   let assistantHistory = [];
@@ -144,9 +143,6 @@ function createHarness(options = {}) {
           claims.add(msg.token);
           return { ok: true };
         }
-        if (msg.type === "GET_CONFIG" && options.deferInitialConfig) {
-          return new Promise(resolve => { initialConfigResolve = resolve; });
-        }
         return msg.type === "GET_CONFIG" ? {
         enabled: true,
         mode: options.mode || "auto",
@@ -201,10 +197,8 @@ function createHarness(options = {}) {
   }
 
   return {
-    advance, baseline, poll, sendFirst, diagnose, flush,
-    resolveInitialConfig(config) { initialConfigResolve(config); },
+    advance, baseline, poll, sendFirst, diagnose,
     clicks: () => clicks,
-    editorText: () => editor.innerText,
     nextUser() { userMessages.push(userNode("Ок, продолжаем", replyId)); },
     nextAssistant() { replyId++; response = assistantNode(); assistantHistory.push(response); },
     rerenderOldTurn() {
@@ -225,12 +219,7 @@ function createHarness(options = {}) {
       } });
     },
     showStop(value) { stopVisible = value; },
-    stopClicks: () => stopClicks,
-    events() {
-      let result;
-      messageListener({ type: "WATCHDOG_LOG" }, null, value => { result = value.events; });
-      return result;
-    }
+    stopClicks: () => stopClicks
   };
 }
 
@@ -604,118 +593,4 @@ test("the expired timer reports Stop as the cancellation reason, not a fake send
   assert.equal(chat.clicks(), 0);
   assert.match(chat.diagnose().lastAutoDecision, /Stop/);
   assert.equal(chat.sentRuntimeMessages.filter(x => x === "CLAIM_SEND").length, 0);
-});
-
-
-test("a blocked Stop action is tried five times, then that reply is abandoned", async () => {
-  const chat = createHarness();
-  await chat.baseline();
-  chat.showStop(true);
-  await chat.advance(1600);
-  for (let i = 0; i < 8; i++) {
-    chat.poll();
-    await chat.advance(1500);
-  }
-  assert.equal(chat.clicks(), 0);
-  assert.equal(chat.stopClicks(), 0);
-  assert.equal(chat.diagnose().currentReplySendAttempts, 5);
-  assert.equal(chat.diagnose().blockedAssistantReplies, 1);
-  assert.ok(chat.events().some(event => event.message.includes("лимит исчерпан")));
-  chat.showStop(false);
-  await chat.advance(20000);
-  chat.poll();
-  assert.equal(chat.clicks(), 0, "an old reply must not be retried after Stop disappears");
-
-  chat.nextUser();
-  chat.nextAssistant();
-  chat.poll();
-  await chat.advance(1600);
-  chat.poll();
-  await chat.advance(5000);
-  await chat.advance(250);
-  assert.equal(chat.clicks(), 1, "the monitor must continue with a new answer");
-});
-
-test("a disabled Send button is retried at most five times and leaves the composer usable", async () => {
-  const chat = createHarness();
-  await chat.baseline();
-  chat.enableSend(false);
-  await chat.advance(1600);
-  chat.poll();
-  await chat.advance(5000);
-  for (let i = 0; i < 5; i++) await chat.advance(250);
-  assert.equal(chat.clicks(), 0);
-  assert.equal(chat.diagnose().currentReplySendAttempts, 5);
-  assert.equal(chat.diagnose().blockedAssistantReplies, 1);
-  assert.equal(chat.editorText(), "", "remove only our unsubmitted follow-up");
-
-  chat.enableSend(true);
-  await chat.advance(30000);
-  chat.poll();
-  assert.equal(chat.clicks(), 0, "the previous answer must stay blocked");
-
-  chat.nextUser();
-  chat.nextAssistant();
-  chat.poll();
-  await chat.advance(1600);
-  chat.poll();
-  await chat.advance(5000);
-  await chat.advance(250);
-  assert.equal(chat.clicks(), 1, "future answers must remain eligible");
-});
-
-test("error-only mode keeps the composer empty and never requests a send claim", async () => {
-  const chat = createHarness({ mode: "errors" });
-  await chat.baseline();
-  await chat.advance(90000);
-  chat.poll();
-  assert.equal(chat.editorText(), "");
-  assert.equal(chat.clicks(), 0);
-  assert.equal(chat.sentRuntimeMessages.filter(type => type === "CLAIM_SEND").length, 0);
-});
-
-test("stale initial GET_CONFIG must not overwrite the mode changed by popup", async () => {
-  const chat = createHarness({ deferInitialConfig: true });
-  chat.changeMode("errors");
-  chat.resolveInitialConfig({ enabled: true, mode: "auto", marker: "!!!ГОТОВО!!!" });
-  await chat.flush();
-  assert.equal(chat.diagnose().mode, "errors");
-});
-
-
-test("auto-continuation only sends without raising the error alert", async () => {
-  const chat = createHarness({ mode: "continue" });
-  await chat.baseline();
-  chat.setError(true);
-  await chat.advance(1600);
-  chat.poll();
-  await chat.advance(5000);
-  await chat.advance(250);
-  assert.equal(chat.clicks(), 1);
-  assert.equal(chat.sentRuntimeMessages.filter(x => x === "PLAY_ERROR").length, 0);
-});
-
-test("combined mode keeps its existing alert and blocks automatic continuation on an error", async () => {
-  const chat = createHarness({ mode: "auto" });
-  await chat.baseline();
-  chat.setError(true);
-  await chat.advance(1600);
-  chat.poll();
-  await chat.advance(10000);
-  assert.equal(chat.clicks(), 0);
-  assert.equal(chat.sentRuntimeMessages.filter(x => x === "PLAY_ERROR").length, 1);
-});
-
-test("switching to error-only while Send is disabled cleans up the extension's own draft", async () => {
-  const chat = createHarness();
-  await chat.baseline();
-  chat.enableSend(false);
-  await chat.advance(1600);
-  chat.poll();
-  await chat.advance(5000); // The extension filled the composer.
-  assert.equal(chat.editorText(), "Ок, продолжаем");
-  chat.changeMode("errors");
-  await chat.advance(250);
-  assert.equal(chat.editorText(), "");
-  assert.equal(chat.clicks(), 0);
 });

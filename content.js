@@ -16,9 +16,6 @@
   const acknowledgedAssistantAlerts = new Set();
   const sendGuard = Core.createSendGuard();
   const submittedAssistantTokens = new Set();
-  const failedSendAttempts = new Map();
-  const abandonedAssistantTokens = new Set();
-  const MAX_SEND_ATTEMPTS = 5;
   let lastClaimedAssistantOrdinal = 0;
   let dialogRoot = null;
   let dialogError = null;
@@ -29,7 +26,6 @@
   let hydrationEpoch = 0;
   let sending = false;
   let modeEpoch = 0;
-  let receivedLiveConfig = false;
   let lastUserTurnAtSend = null;
   let lastAutoDecision = "Проверка ещё не проводилась";
   let lastAutoDecisionAt = null;
@@ -393,30 +389,6 @@
     recordEvent(eventType, message);
   }
 
-  function recordSendBlock(token, key, reason) {
-    if (abandonedAssistantTokens.has(token)) return;
-    const attempts = (failedSendAttempts.get(token) || 0) + 1;
-    failedSendAttempts.set(token, attempts);
-    if (failedSendAttempts.size > 500)
-      failedSendAttempts.delete(failedSendAttempts.keys().next().value);
-    if (attempts >= MAX_SEND_ATTEMPTS) {
-      abandonedAssistantTokens.add(token);
-      if (abandonedAssistantTokens.size > 500)
-        abandonedAssistantTokens.delete(abandonedAssistantTokens.values().next().value);
-      handled.add(key);
-      autoDecision(reason + " (" + attempts + "/" + MAX_SEND_ATTEMPTS +
-        "); лимит исчерпан — ждём следующий ответ ИИ");
-    } else {
-      autoDecision(reason + " (" + attempts + "/" + MAX_SEND_ATTEMPTS + ")");
-    }
-  }
-
-  // We only undo a draft we ourselves inserted into an initially empty editor.
-  // Do not overwrite edits made by the user while waiting for the button.
-  function removeOurDraft(editor) {
-    if (editor && editorText(editor) === config.reply) fillEditor(editor, "");
-  }
-
   function cooldownRemainingMs() {
     const localUntil = lastClickAt ? lastClickAt + config.cooldownSeconds * 1000 : 0;
     return Math.max(0, Math.max(localUntil, globalLockedUntil) - Date.now());
@@ -459,15 +431,13 @@
       const selection = getSelection();
       const range = document.createRange();
       range.selectNodeContents(editor);
-      if (value) range.collapse(false);
+      range.collapse(false);
       selection.removeAllRanges();
       selection.addRange(range);
       const inserted = document.execCommand("insertText", false, value);
-      if (!inserted || (!value && editorText(editor))) {
+      if (!inserted) {
         editor.textContent = value;
-        editor.dispatchEvent(new InputEvent("input", {
-          bubbles: true, inputType: value ? "insertText" : "deleteContentBackward", data: value
-        }));
+        editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: value }));
       }
     } else {
       const descriptor = Object.getOwnPropertyDescriptor(
@@ -482,13 +452,13 @@
   async function sendIfReady(expectedKey) {
     pending = null;
     const expectedModeEpoch = modeEpoch;
-    if (sending || !config.enabled || config.mode === "errors" ||
+    autoDecision("Таймер ожидания истёк — проверяем отправку", "attempt");
+    if (sending || !config.enabled || config.mode !== "auto" ||
         !cooldownHydrated || cooldownRemainingMs() ||
         location.href !== route) {
       autoDecision("Отправка отменена: режим, блокировка или смена чата");
       return;
     }
-    autoDecision("Таймер ожидания истёк — проверяем отправку", "attempt");
     const selectors = currentSelectors();
     const result = latestAssistant(selectors.assistant);
     if (!result.node) {
@@ -503,7 +473,6 @@
       return;
     }
     if (result.ordinal <= lastClaimedAssistantOrdinal ||
-        abandonedAssistantTokens.has(assistantToken) ||
         submittedAssistantTokens.has(assistantToken) ||
         sendGuard.alreadySent(text, latestUserTurn().logicalTurn)) {
       autoDecision("Отправка отменена: ответ уже обработан");
@@ -514,15 +483,14 @@
       return;
     }
     if (hasStopButton(selectors.stop)) {
-      recordSendBlock(assistantToken, expectedKey,
-        "Отправка заблокирована кнопкой Stop");
+      autoDecision("Отправка отменена: генерация ещё идёт (кнопка Stop)");
       return;
     }
     if (config.completionSelector && !query(config.completionSelector).some(visible)) {
       autoDecision("Отправка отменена: нет элемента завершения");
       return;
     }
-    if (config.mode !== "continue" && checkError()) {
+    if (checkError()) {
       autoDecision("Отправка отменена: обнаружена ошибка");
       return;
     }
@@ -544,12 +512,11 @@
       return;
     }
     sending = true;
-    let shouldRestoreEmptyEditor = false;
     try {
       fillEditor(editor, config.reply);
-      for (let attempt = 0; attempt < MAX_SEND_ATTEMPTS; attempt++) {
+      for (let attempt = 0; attempt < 10; attempt++) {
         await new Promise(resolve => setTimeout(resolve, 200));
-        if (!config.enabled || config.mode === "errors" ||
+        if (!config.enabled || config.mode !== "auto" ||
             modeEpoch !== expectedModeEpoch || location.href !== route) {
           autoDecision("Отправка отменена: изменился режим или чат");
           return;
@@ -561,12 +528,10 @@
         // CRITICAL: recheck stop state on EVERY retry and immediately
         // before click. A Stop button must NEVER be mistaken for Send.
         if (hasStopButton(selectors.stop)) {
-          recordSendBlock(assistantToken, expectedKey,
-            "Отправка заблокирована кнопкой Stop");
-          shouldRestoreEmptyEditor = true;
+          recordEvent("blocked", "Отправка отменена: появилась кнопка Stop");
           return;
         }
-        if ((config.mode !== "continue" && checkError()) || cooldownRemainingMs()) return;
+        if (checkError() || cooldownRemainingMs()) return;
         const current = latestAssistant(selectors.assistant);
         if (!current.node || messageKey(current.node, current.count, textOf(current.node)) !== expectedKey ||
             !followsUser(current.node, latestUserTurn().node) ||
@@ -575,13 +540,8 @@
           return;
         }
         const button = findSendButton(selectors.send);
-        if (!button) {
-          recordSendBlock(assistantToken, expectedKey,
-            "Кнопка отправки недоступна");
-          if (abandonedAssistantTokens.has(assistantToken)) shouldRestoreEmptyEditor = true;
-          continue;
-        }
-        if (!config.enabled || config.mode === "errors" || modeEpoch !== expectedModeEpoch ||
+        if (!button) continue;
+        if (!config.enabled || config.mode !== "auto" || modeEpoch !== expectedModeEpoch ||
             Core.isStopAction(button) || hasStopButton(selectors.stop)) return;
         const userTurn = latestUserTurn().logicalTurn;
         if (sendGuard.alreadySent(text, userTurn)) return;
@@ -619,7 +579,7 @@
         // Claim may take time: conditions can change during the await.
         // A claim is intentionally never rolled back, even if UI changed;
         // preventing duplicate Sends is more important than retrying blindly.
-        if (!config.enabled || config.mode === "errors" || modeEpoch !== expectedModeEpoch ||
+        if (!config.enabled || config.mode !== "auto" || modeEpoch !== expectedModeEpoch ||
             location.href !== route || hasStopButton(selectors.stop) ||
             editorText(editor) !== config.reply) return;
         const verified = latestAssistant(selectors.assistant);
@@ -630,7 +590,7 @@
         const finalButton = findSendButton(selectors.send);
         if (!finalButton || Core.isStopAction(finalButton) ||
             hasStopButton(selectors.stop) || !config.enabled ||
-            config.mode === "errors" || modeEpoch !== expectedModeEpoch) return;
+            config.mode !== "auto" || modeEpoch !== expectedModeEpoch) return;
         sendGuard.record(text, userTurn);
         lastUserTurnAtSend = userTurn;
         handled.add(expectedKey);
@@ -641,11 +601,9 @@
         recordEvent("sent", "Отправлено: " + config.reply);
         return;
       }
+      recordEvent("blocked", "Кнопка отправки недоступна; текст оставлен в поле");
+      console.warn("Chat Watchdog: send button unavailable; follow-up left in editor.");
     } finally {
-      // If the user changes mode while Send is unavailable, do not leave
-      // our unsubmitted follow-up in the composer in the new mode.
-      if (shouldRestoreEmptyEditor || modeEpoch !== expectedModeEpoch)
-        removeOurDraft(editor);
       sending = false;
     }
   }
@@ -658,15 +616,13 @@
       acknowledgedAssistantAlerts.clear();
       route = location.href;
       lastClaimedAssistantOrdinal = 0;
-      failedSendAttempts.clear();
-      abandonedAssistantTokens.clear();
       hydrateCooldown();
       seenInitial = false;
       lastKey = "";
       handled = new Set();
       cancelPending();
     }
-    if (config.mode !== "continue" && checkError()) {
+    if (checkError()) {
       cancelPending();
       return;
     }
@@ -705,16 +661,14 @@
       if (Core.completionMatches(text, config.marker, config.markerRegex)) handled.add(key);
       return;
     }
-    const assistantToken = sendToken(result.node, text, result.count);
     if (handled.has(key) || sending ||
       result.ordinal <= lastClaimedAssistantOrdinal ||
-      abandonedAssistantTokens.has(assistantToken) ||
-      submittedAssistantTokens.has(assistantToken) ||
+      submittedAssistantTokens.has(sendToken(result.node, text, result.count)) ||
       !Core.completionMatches(text, config.marker, config.markerRegex) ||
       sendGuard.alreadySent(text, latestUserTurn().logicalTurn)) return;
     if (Date.now() - stableSince < (config.marker ? 1500 : 4500)) return;
     if (hasStopButton(selectors.stop)) {
-      recordSendBlock(assistantToken, key, "Отправка заблокирована кнопкой Stop");
+      recordEvent("blocked", "Ожидание: видна кнопка Stop");
       return;
     }
     if (cooldownRemainingMs()) {
@@ -768,12 +722,6 @@
       logicalUserTurnDetected: !!latestUserTurn().logicalTurn,
       sendClicks,
       rememberedAssistantReplies: submittedAssistantTokens.size,
-      blockedAssistantReplies: abandonedAssistantTokens.size,
-      currentReplySendAttempts: (() => {
-        const current = latestAssistant(selectors.assistant);
-        return current.node ? (failedSendAttempts.get(
-          sendToken(current.node, textOf(current.node), current.count)) || 0) : 0;
-      })(),
       assistantOrdinal: latestAssistant(selectors.assistant).ordinal,
       lastClaimedAssistantOrdinal,
       cooldownRemainingSeconds: Math.ceil(cooldownRemainingMs() / 1000),
@@ -809,17 +757,15 @@
     if (!message || message.type !== "WATCHDOG_CONFIG") return false;
     const wasEnabled = config.enabled;
     const previousMode = config.mode;
-    receivedLiveConfig = true;
     config = Core.normalize(message.config);
     if (previousMode !== config.mode) {
       modeEpoch++;
       cancelPending();
       if (config.enabled) recordEvent("mode", config.mode === "errors" ?
         "Режим: только ошибки — автоотправка отключена" :
-        config.mode === "continue" ? "Режим: только автопродление" :
-        "Режим: автопродление и ошибки");
+        "Режим: автопродолжение и ошибки");
       // Returning to auto mode must not replay an already completed reply.
-      if (config.mode !== "errors") {
+      if (config.mode === "auto") {
         hydrateCooldown();
         seenInitial = false;
         lastKey = "";
@@ -844,9 +790,6 @@
   });
 
   chrome.runtime.sendMessage({ type: "GET_CONFIG" }).then((saved) => {
-    // A popup change received while the initial request was in flight wins.
-    // Otherwise an older snapshot can silently switch errors-only back to auto.
-    if (receivedLiveConfig) return;
     config = Core.normalize(saved);
     if (config.enabled) hydrateCooldown();
     check();

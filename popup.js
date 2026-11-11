@@ -128,8 +128,7 @@
       });
       const diagnostic = [
         "Монитор: " + (result.enabled ? "ON" : "OFF"),
-        "Режим: " + (result.mode === "errors" ? "Только ошибки" :
-          result.mode === "continue" ? "Только автопродление" : "Автопродление + ошибки"),
+        "Режим: " + (result.mode === "errors" ? "Только ошибки" : "Автопродолжение + ошибки"),
         "Сообщений ИИ: " + result.assistantCount,
         "Режим поиска: " + result.assistantDetection,
         "Старые роли: " + result.legacyAssistantCount,
@@ -143,8 +142,6 @@
         "Ход пользователя распознан: " + (result.logicalUserTurnDetected ? "да" : "нет"),
         "Маркер уже отправлен: " + (result.markerAlreadySent ? "ДА" : "НЕТ"),
         "Нажатий Отправить монитором: " + result.sendClicks,
-        "Неудачных попыток для ответа: " + (result.currentReplySendAttempts || 0) + "/5",
-        "Ответов пропущено после 5 попыток: " + (result.blockedAssistantReplies || 0),
         "Запомнено ответов ИИ: " + result.rememberedAssistantReplies,
         "Номер текущего ответа: " + result.assistantOrdinal,
         "Последний ответ обработчика: " + result.lastClaimedAssistantOrdinal,

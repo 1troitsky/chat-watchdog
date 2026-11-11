@@ -219,6 +219,13 @@ function createHarness(options = {}) {
       } });
     },
     showStop(value) { stopVisible = value; },
+    setEditorText(value) { editor.innerText = value; },
+    setAssistantText(value) { if (response) response.innerText = value; },
+    journal() {
+      let events = [];
+      messageListener({ type: "WATCHDOG_LOG" }, null, reply => { events = reply.events; });
+      return events;
+    },
     stopClicks: () => stopClicks
   };
 }
@@ -593,4 +600,50 @@ test("the expired timer reports Stop as the cancellation reason, not a fake send
   assert.equal(chat.clicks(), 0);
   assert.match(chat.diagnose().lastAutoDecision, /Stop/);
   assert.equal(chat.sentRuntimeMessages.filter(x => x === "CLAIM_SEND").length, 0);
+});
+
+
+test("busy input retries five times, then stays quiet while a new reply remains eligible", async () => {
+  const chat = createHarness();
+  await chat.baseline();
+  chat.setEditorText("Мой черновик — не перезаписывать");
+  await chat.advance(1600);
+  chat.poll();
+  for (let i = 0; i < 5; i++) {
+    await chat.advance(5000);
+    chat.poll();
+  }
+  const busy = () => chat.journal().filter(e => e.message === "Поле ввода занято");
+  assert.equal(busy().length, 5, "five genuine timer-triggered failed attempts");
+  assert.equal(chat.journal().filter(e => /Лимит 5\/5/.test(e.message)).length, 1);
+  assert.equal(chat.diagnose().enabled, true);
+  assert.equal(chat.diagnose().pending, false);
+  await chat.advance(120000);
+  for (let i = 0; i < 10; i++) chat.poll();
+  assert.equal(busy().length, 5, "old reply must not be retried");
+  assert.equal(chat.clicks(), 0);
+  chat.setEditorText("");
+  chat.nextUser();
+  chat.nextAssistant();
+  chat.poll();
+  await chat.advance(1600);
+  chat.poll();
+  await chat.advance(5000);
+  await chat.advance(250);
+  assert.equal(chat.clicks(), 1, "new assistant reply still sends");
+});
+
+test("streaming marked text does not spend send attempts before the timer fires", async () => {
+  const chat = createHarness({ replyText: "!!!ГОТОВО!!!\nНачало" });
+  await chat.baseline();
+  for (let i = 0; i < 7; i++) {
+    chat.setAssistantText("!!!ГОТОВО!!!\nНовая строка " + i);
+    chat.poll();
+    await chat.advance(1600);
+    chat.poll();
+  }
+  assert.equal(chat.journal().filter(e => /Лимит 5\/5/.test(e.message)).length, 0);
+  await chat.advance(5000);
+  await chat.advance(250);
+  assert.equal(chat.clicks(), 1, "finally completed reply should send");
 });

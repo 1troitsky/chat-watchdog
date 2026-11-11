@@ -31,6 +31,10 @@
   let lastAutoDecisionAt = null;
   const eventLog = [];
   const lastEventSignature = new Map();
+  // Only a real send attempt counts. Monitoring, streaming and changing text
+  // must not use up the five attempts for an assistant reply.
+  const attemptsByAssistant = new Map();
+  const exhaustedAssistantTokens = new Set();
 
   function query(selector) {
     if (!selector) return [];
@@ -482,6 +486,11 @@
       autoDecision("Отправка отменена: маркер исчез из ответа");
       return;
     }
+    // This timer has actually reached a stable, eligible assistant reply.
+    // Count it once, irrespective of which UI element prevents the send.
+    const attempt = (attemptsByAssistant.get(assistantToken) || 0) + 1;
+    if (attempt > 5) return;
+    attemptsByAssistant.set(assistantToken, attempt);
     if (hasStopButton(selectors.stop)) {
       autoDecision("Отправка отменена: генерация ещё идёт (кнопка Stop)");
       return;
@@ -666,6 +675,14 @@
       submittedAssistantTokens.has(sendToken(result.node, text, result.count)) ||
       !Core.completionMatches(text, config.marker, config.markerRegex) ||
       sendGuard.alreadySent(text, latestUserTurn().logicalTurn)) return;
+    const assistantToken = sendToken(result.node, text, result.count);
+    if ((attemptsByAssistant.get(assistantToken) || 0) >= 5) {
+      if (!exhaustedAssistantTokens.has(assistantToken)) {
+        exhaustedAssistantTokens.add(assistantToken);
+        autoDecision("Лимит 5/5 попыток отправки: текущий ответ пропущен; монитор активен");
+      }
+      return;
+    }
     if (Date.now() - stableSince < (config.marker ? 1500 : 4500)) return;
     if (hasStopButton(selectors.stop)) {
       recordEvent("blocked", "Ожидание: видна кнопка Stop");

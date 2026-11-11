@@ -35,6 +35,22 @@
   // must not use up the five attempts for an assistant reply.
   const attemptsByAssistant = new Map();
   const exhaustedAssistantTokens = new Set();
+  let watchdogDraft = null;
+  let configRevision = 0;
+  // Completion alerts use a separate stable-turn key and are evaluated before
+  // the auto-send cooldown / error modes. They never depend on the marker.
+  let completionInitialized = false;
+  let completionCandidate = null;
+  const completionNotified = new Set();
+  let completionNotifications = 0;
+  // An independent wake-up at the end of each cooldown complements the
+  // MutationObserver and 1.5-second polling timer. No state is reset after
+  // Send: the existing duplicate guards must remain intact.
+  let cooldownWakeTimer = null;
+  let cooldownWakeAt = 0;
+  let cooldownWakeCount = 0;
+  let lastMonitorCheckAt = 0;
+  let monitorCheckCount = 0;
 
   function query(selector) {
     if (!selector) return [];
@@ -170,6 +186,70 @@
     // must NOT turn an old reply into a new send opportunity.
     return route + "|assistant-fallback:" +
       Core.userTurnFingerprint(count || 0, text);
+  }
+
+  function completionTurnKey(result) {
+    const node = result.node;
+    if (!node) return null;
+    for (const [selector, attr] of [
+      ["[data-turn-key]", "data-turn-key"],
+      ["[data-message-id]", "data-message-id"],
+      ["[data-content-search-unit-key]", "data-content-search-unit-key"]
+    ]) {
+      const parent = typeof node.closest === "function" && node.closest(selector);
+      const id = parent && parent.getAttribute(attr);
+      if (id) return route + "|complete:" + id;
+    }
+    // Unlike sendToken(), a completion key must not change while the text
+    // streams. Fallback to the position and latest user turn instead.
+    return route + "|complete-fallback:" + result.ordinal + ":" +
+      (latestUserTurn().logicalTurn || "unknown");
+  }
+
+  function checkReplyCompletion() {
+    if (!config.enabled) return;
+    const result = latestAssistant(currentSelectors().assistant);
+    const stopped = hasStopButton(currentSelectors().stop);
+    if (!result.node) {
+      completionInitialized = true;
+      completionCandidate = null;
+      return;
+    }
+    const token = completionTurnKey(result);
+    const text = textOf(result.node);
+    const now = Date.now();
+    if (!completionInitialized) {
+      completionInitialized = true;
+      // Do not play the old chat history upon enabling the extension.
+      if (!stopped && text) completionNotified.add(token);
+    }
+    if (!text || !followsUser(result.node, latestUserTurn().node) ||
+        completionNotified.has(token)) return;
+    if (!completionCandidate || completionCandidate.token !== token ||
+        completionCandidate.text !== text) {
+      completionCandidate = { token, text, stableAt: now, stopSeen: stopped };
+      return;
+    }
+    if (stopped) {
+      completionCandidate.stableAt = now;
+      completionCandidate.stopSeen = true;
+      return;
+    }
+    if (completionCandidate.stopSeen) {
+      // Require a fresh stability window after Stop disappears.
+      completionCandidate.stopSeen = false;
+      completionCandidate.stableAt = now;
+      return;
+    }
+    // Must be both stable and not actively generating. This is independent
+    // from the user's completion-marker setting and auto-send delay.
+    if (now - completionCandidate.stableAt < 3000) return;
+    completionNotified.add(token);
+    if (completionNotified.size > 200) completionNotified.delete(completionNotified.values().next().value);
+    completionNotifications++;
+    if (config.completionAudioName) {
+      chrome.runtime.sendMessage({ type: "PLAY_COMPLETION", token }).catch(() => {});
+    }
   }
 
   function messageKey(node, count, text) {
@@ -413,6 +493,37 @@
     return Math.max(0, Math.max(localUntil, globalLockedUntil) - Date.now());
   }
 
+  function cancelCooldownWake() {
+    if (cooldownWakeTimer !== null) clearTimeout(cooldownWakeTimer);
+    cooldownWakeTimer = null;
+    cooldownWakeAt = 0;
+  }
+
+  function armCooldownWake() {
+    if (!config.enabled || config.mode === "errors" || !cooldownHydrated) {
+      cancelCooldownWake();
+      return;
+    }
+    const remaining = cooldownRemainingMs();
+    if (remaining <= 0) {
+      cancelCooldownWake();
+      return;
+    }
+    const dueAt = Date.now() + remaining + 100;
+    if (cooldownWakeTimer !== null && Math.abs(cooldownWakeAt - dueAt) < 250) return;
+    cancelCooldownWake();
+    cooldownWakeAt = dueAt;
+    const expectedRoute = route;
+    cooldownWakeTimer = setTimeout(() => {
+      cooldownWakeTimer = null;
+      cooldownWakeAt = 0;
+      if (!config.enabled || config.mode === "errors" || route !== expectedRoute) return;
+      cooldownWakeCount++;
+      recordEvent("monitor", "Пауза завершена — проверка нового ответа ИИ");
+      scheduleCheck();
+    }, remaining + 100);
+  }
+
   function hydrateCooldown() {
     const epoch = ++hydrationEpoch;
     const requestedRoute = location.href;
@@ -427,11 +538,20 @@
       }
       globalLockedUntil = state.lockedUntil;
       cooldownHydrated = true;
+      armCooldownWake();
       scheduleCheck();
     }).catch(() => {
       if (epoch === hydrationEpoch)
         recordEvent("blocked", "Автопродолжение недоступно: таймер не синхронизирован");
     });
+  }
+
+  function cleanOwnDraft(token) {
+    if (watchdogDraft && (!token || watchdogDraft.token === token)) {
+      const { editor, text } = watchdogDraft;
+      if (editorText(editor) === text) fillEditor(editor, "");
+      watchdogDraft = null;
+    }
   }
 
   function cancelPending() {
@@ -477,7 +597,7 @@
     pending = null;
     const expectedModeEpoch = modeEpoch;
     autoDecision("Таймер ожидания истёк — проверяем отправку", "attempt");
-    if (sending || !config.enabled || config.mode !== "auto" ||
+    if (sending || !config.enabled || config.mode === "errors" ||
         !cooldownHydrated || cooldownRemainingMs() ||
         location.href !== route) {
       autoDecision("Отправка отменена: режим, блокировка или смена чата");
@@ -506,20 +626,11 @@
       autoDecision("Отправка отменена: маркер исчез из ответа");
       return;
     }
-    // This timer has actually reached a stable, eligible assistant reply.
-    // Count it once, irrespective of which UI element prevents the send.
-    const attempt = (attemptsByAssistant.get(assistantToken) || 0) + 1;
-    if (attempt > 5) return;
-    attemptsByAssistant.set(assistantToken, attempt);
-    if (hasStopButton(selectors.stop)) {
-      autoDecision("Отправка отменена: генерация ещё идёт (кнопка Stop)");
-      return;
-    }
     if (config.completionSelector && !query(config.completionSelector).some(visible)) {
       autoDecision("Отправка отменена: нет элемента завершения");
       return;
     }
-    if (checkError()) {
+    if (config.mode !== "continue" && checkError()) {
       autoDecision("Отправка отменена: обнаружена ошибка");
       return;
     }
@@ -530,9 +641,29 @@
         Math.ceil(remaining / 1000) + " с");
       return;
     }
+    // Count only attempts that reach the actual composer/Stop/Send checks.
+    const attempt = (attemptsByAssistant.get(assistantToken) || 0) + 1;
+    if (attempt > 5) return;
+    attemptsByAssistant.set(assistantToken, attempt);
+    const failed = (reason) => {
+      autoDecision(reason + ": " + attempt + "/5");
+      if (attempt === 5) {
+        exhaustedAssistantTokens.add(assistantToken);
+        cleanOwnDraft(assistantToken);
+        cancelPending();
+        autoDecision("Лимит 5/5 попыток отправки: текущий ответ пропущен; монитор активен");
+      }
+    };
+    if (hasStopButton(selectors.stop)) {
+      failed("Кнопка Stop блокирует отправку");
+      return;
+    }
     const editor = findEditor(selectors.editor);
-    if (!editor || editorText(editor)) {
-      recordEvent("blocked", editor ? "Поле ввода занято" : "Поле ввода не найдено");
+    const ourDraft = !!(editor && watchdogDraft &&
+      watchdogDraft.token === assistantToken && watchdogDraft.editor === editor &&
+      editorText(editor) === watchdogDraft.text);
+    if (!editor || (editorText(editor) && !ourDraft)) {
+      failed(editor ? "Поле ввода занято" : "Поле ввода не найдено");
       return; // Never overwrite a human draft.
     }
     // A stable finished reply must be the newest visible turn.
@@ -542,10 +673,13 @@
     }
     sending = true;
     try {
-      fillEditor(editor, config.reply);
-      for (let attempt = 0; attempt < 10; attempt++) {
+      if (!ourDraft) {
+        fillEditor(editor, config.reply);
+        watchdogDraft = { editor, text: config.reply, token: assistantToken };
+      }
+      for (let retry = 0; retry < 10; retry++) {
         await new Promise(resolve => setTimeout(resolve, 200));
-        if (!config.enabled || config.mode !== "auto" ||
+        if (!config.enabled || config.mode === "errors" ||
             modeEpoch !== expectedModeEpoch || location.href !== route) {
           autoDecision("Отправка отменена: изменился режим или чат");
           return;
@@ -557,10 +691,10 @@
         // CRITICAL: recheck stop state on EVERY retry and immediately
         // before click. A Stop button must NEVER be mistaken for Send.
         if (hasStopButton(selectors.stop)) {
-          recordEvent("blocked", "Отправка отменена: появилась кнопка Stop");
+          failed("Кнопка Stop блокирует отправку");
           return;
         }
-        if (checkError() || cooldownRemainingMs()) return;
+        if ((config.mode !== "continue" && checkError()) || cooldownRemainingMs()) return;
         const current = latestAssistant(selectors.assistant);
         if (!current.node || messageKey(current.node, current.count, textOf(current.node)) !== expectedKey ||
             !followsUser(current.node, latestUserTurn().node) ||
@@ -570,7 +704,7 @@
         }
         const button = findSendButton(selectors.send);
         if (!button) continue;
-        if (!config.enabled || config.mode !== "auto" || modeEpoch !== expectedModeEpoch ||
+        if (!config.enabled || config.mode === "errors" || modeEpoch !== expectedModeEpoch ||
             Core.isStopAction(button) || hasStopButton(selectors.stop)) return;
         const userTurn = latestUserTurn().logicalTurn;
         if (sendGuard.alreadySent(text, userTurn)) return;
@@ -608,7 +742,7 @@
         // Claim may take time: conditions can change during the await.
         // A claim is intentionally never rolled back, even if UI changed;
         // preventing duplicate Sends is more important than retrying blindly.
-        if (!config.enabled || config.mode !== "auto" || modeEpoch !== expectedModeEpoch ||
+        if (!config.enabled || config.mode === "errors" || modeEpoch !== expectedModeEpoch ||
             location.href !== route || hasStopButton(selectors.stop) ||
             editorText(editor) !== config.reply) return;
         const verified = latestAssistant(selectors.assistant);
@@ -619,19 +753,25 @@
         const finalButton = findSendButton(selectors.send);
         if (!finalButton || Core.isStopAction(finalButton) ||
             hasStopButton(selectors.stop) || !config.enabled ||
-            config.mode !== "auto" || modeEpoch !== expectedModeEpoch) return;
+            config.mode === "errors" || modeEpoch !== expectedModeEpoch) return;
         sendGuard.record(text, userTurn);
         lastUserTurnAtSend = userTurn;
         handled.add(expectedKey);
         lastClickAt = Date.now();
         sendClicks++;
         finalButton.click();
+        watchdogDraft = null;
+        // Explicitly re-arm monitoring after Send. Also wake at cooldown end
+        // even if the next answer arrived while we were paused.
+        armCooldownWake();
+        scheduleCheck();
+        recordEvent("monitor", "Монитор активен — ожидаем следующий ответ ИИ");
         autoDecision("Отправлено одно сообщение автопродолжения", "sent");
         recordEvent("sent", "Отправлено: " + config.reply);
         return;
       }
-      recordEvent("blocked", "Кнопка отправки недоступна; текст оставлен в поле");
-      console.warn("Chat Watchdog: send button unavailable; follow-up left in editor.");
+      failed("Кнопка отправки недоступна");
+      console.warn("Chat Watchdog: send button unavailable; retry is bounded.");
     } finally {
       sending = false;
     }
@@ -639,19 +779,26 @@
 
   function check() {
     if (!config.enabled) return;
+    lastMonitorCheckAt = Date.now();
+    monitorCheckCount++;
     if (route !== location.href) {
       closeDialog();
       errorTracker.reset();
       acknowledgedAssistantAlerts.clear();
+      completionInitialized = false;
+      completionCandidate = null;
+      completionNotified.clear();
       route = location.href;
       lastClaimedAssistantOrdinal = 0;
+      cancelCooldownWake();
       hydrateCooldown();
       seenInitial = false;
       lastKey = "";
       handled = new Set();
       cancelPending();
     }
-    if (checkError()) {
+    checkReplyCompletion();
+    if (config.mode !== "continue" && checkError()) {
       cancelPending();
       return;
     }
@@ -662,9 +809,11 @@
     // Global lock is checked BEFORE inspecting the completion marker, so no
     // new timers, editor fills or Send attempts can start during cooldown.
     if (!cooldownHydrated || cooldownRemainingMs()) {
+      if (cooldownHydrated) armCooldownWake();
       cancelPending();
       return;
     }
+    cancelCooldownWake();
     const selectors = currentSelectors();
     const result = latestAssistant(selectors.assistant);
     // Establish the baseline even for an empty/new conversation. Otherwise
@@ -683,6 +832,11 @@
       if (pending) autoDecision("Таймер отменён: ответ изменился во время ожидания");
       lastKey = key;
       stableSince = Date.now();
+      // A changing response is still streaming; earlier Stop encounters
+      // must not exhaust the budget before generation completes.
+      const turnToken = sendToken(result.node, text, result.count);
+      attemptsByAssistant.delete(turnToken);
+      exhaustedAssistantTokens.delete(turnToken);
       cancelPending();
     }
     if (!seenInitial) {
@@ -704,10 +858,12 @@
       return;
     }
     if (Date.now() - stableSince < (config.marker ? 1500 : 4500)) return;
-    if (hasStopButton(selectors.stop)) {
+    if (hasStopButton(selectors.stop) && Date.now() - stableSince < 5000) {
       recordEvent("blocked", "Ожидание: видна кнопка Stop");
       return;
     }
+    // A persistent Stop button with no text changes for long enough now
+    // gets one scheduled blocked attempt. We never click Stop.
     if (cooldownRemainingMs()) {
       recordEvent("blocked", "Пауза между отправками: ещё " +
         Math.ceil(cooldownRemainingMs() / 1000) + " с");
@@ -777,7 +933,14 @@
       sendButtonFound: !!findSendButton(selectors.send),
       stopButtonVisible: hasStopButton(selectors.stop),
       pending: !!pending,
+      monitorCheckCount,
+      lastMonitorCheckAt,
+      monitorCheckAgeSeconds: lastMonitorCheckAt ?
+        Math.floor((Date.now() - lastMonitorCheckAt) / 1000) : null,
+      cooldownWakeAt,
+      cooldownWakeCount,
       seenInitial,
+      completionNotifications,
       lastAutoDecision, lastAutoDecisionAt,
       scheduledSendAt: pending ? pending.dueAt : null
     };
@@ -801,15 +964,21 @@
     if (!message || message.type !== "WATCHDOG_CONFIG") return false;
     const wasEnabled = config.enabled;
     const previousMode = config.mode;
+    configRevision++;
     config = Core.normalize(message.config);
+    if (previousMode !== "continue" && config.mode === "continue") {
+      errorTracker.reset();
+      closeDialog();
+    }
     if (previousMode !== config.mode) {
       modeEpoch++;
       cancelPending();
+      cancelCooldownWake();
       if (config.enabled) recordEvent("mode", config.mode === "errors" ?
         "Режим: только ошибки — автоотправка отключена" :
         "Режим: автопродолжение и ошибки");
       // Returning to auto mode must not replay an already completed reply.
-      if (config.mode === "auto") {
+      if (config.mode !== "errors") {
         hydrateCooldown();
         seenInitial = false;
         lastKey = "";
@@ -817,6 +986,7 @@
       }
     }
     if (!config.enabled) {
+      cancelCooldownWake();
       cooldownHydrated = false;
       hydrationEpoch++;
       cancelPending();
@@ -833,7 +1003,9 @@
     scheduleCheck();
   });
 
+  const startupConfigRevision = configRevision;
   chrome.runtime.sendMessage({ type: "GET_CONFIG" }).then((saved) => {
+    if (configRevision !== startupConfigRevision) return;
     config = Core.normalize(saved);
     if (config.enabled) hydrateCooldown();
     check();
@@ -889,4 +1061,15 @@
     attributeOldValue: true
   });
   setInterval(check, 1500);
+  // Browser timers can be throttled when the tab is not foregrounded. As
+  // soon as Chrome resumes the page, scan without waiting for user typing.
+  function resumeObservation() {
+    if (config.enabled) scheduleCheck();
+  }
+  if (typeof document.addEventListener === "function")
+    document.addEventListener("visibilitychange", resumeObservation);
+  if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+    window.addEventListener("focus", resumeObservation);
+    window.addEventListener("pageshow", resumeObservation);
+  }
 })();

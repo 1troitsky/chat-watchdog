@@ -26,9 +26,15 @@
     });
   }
 
+  // Keep the original tab ID key for error audio, so upgrades do not lose it.
+  const fileKey = (tabId, kind = "error") => kind === "completion" ?
+    "completion:" + tabId : String(tabId);
   root.ChatWatchdogAudio = {
-    save: (tabId, file) => run("readwrite", (store) => store.put(file, String(tabId))),
-    get: (tabId) => run("readonly", (store) => store.get(String(tabId))),
-    remove: (tabId) => run("readwrite", (store) => store.delete(String(tabId)))
+    save: (tabId, file, kind = "error") =>
+      run("readwrite", store => store.put(file, fileKey(tabId, kind))),
+    get: (tabId, kind = "error") =>
+      run("readonly", store => store.get(fileKey(tabId, kind))),
+    remove: (tabId, kind = "error") =>
+      run("readwrite", store => store.delete(fileKey(tabId, kind)))
   };
 })(typeof globalThis !== "undefined" ? globalThis : this);

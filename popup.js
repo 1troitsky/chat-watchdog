@@ -33,7 +33,9 @@
     $("toastEnabled").checked = config.toastEnabled;
     for (const field of fields) $(field).value = config[field];
     $("autoSendSettings").hidden = config.mode === "errors";
+    $("errorSettings").hidden = config.mode === "continue";
     $("audioName").textContent = config.audioName || "Файл не выбран";
+    $("completionAudioName").textContent = config.completionAudioName || "Файл не выбран";
   };
   render();
 
@@ -61,7 +63,10 @@
   for (const field of fields) {
     $(field).addEventListener("change", async () => {
       config[field] = $(field).value;
-      if (field === "mode") $("autoSendSettings").hidden = config.mode === "errors";
+      if (field === "mode") {
+        $("autoSendSettings").hidden = config.mode === "errors";
+        $("errorSettings").hidden = config.mode === "continue";
+      }
       await save();
     });
   }
@@ -128,7 +133,8 @@
       });
       const diagnostic = [
         "Монитор: " + (result.enabled ? "ON" : "OFF"),
-        "Режим: " + (result.mode === "errors" ? "Только ошибки" : "Автопродолжение + ошибки"),
+        "Режим: " + (result.mode === "errors" ? "Только ошибки" :
+          result.mode === "continue" ? "Только автопродолжение" : "Автопродолжение + ошибки"),
         "Сообщений ИИ: " + result.assistantCount,
         "Режим поиска: " + result.assistantDetection,
         "Старые роли: " + result.legacyAssistantCount,
@@ -167,7 +173,10 @@
         "Отправка назначена: " + (result.scheduledSendAt ?
           new Date(result.scheduledSendAt).toLocaleTimeString("ru-RU") : "нет"),
         "Последняя попытка: " + (result.lastAutoDecisionAt || "нет"),
-        "Причина/результат: " + result.lastAutoDecision
+        "Причина/результат: " + result.lastAutoDecision,
+        "Звук завершения (ответов): " + (result.completionNotifications || 0),
+        "Последняя проверка: " + (result.lastMonitorCheckAt ? new Date(result.lastMonitorCheckAt).toLocaleTimeString("ru-RU") : "нет"),
+        "Срабатываний будильника после паузы: " + (result.cooldownWakeCount || 0)
       ].join("\n");
       output.textContent = diagnostic;
       return diagnostic;
@@ -249,4 +258,22 @@
       status("Не получилось сохранить MP3: " + error.message);
     }
   });
+
+  $("completionAudioFile").addEventListener("change", async () => {
+    const file = $("completionAudioFile").files[0];
+    if (!file) return;
+    if (!file.type.startsWith("audio/")) {
+      status("Выбери аудиофайл для завершения ответа");
+      return;
+    }
+    try {
+      await ChatWatchdogAudio.save(tab.id, file, "completion");
+      config.completionAudioName = file.name;
+      $("completionAudioName").textContent = file.name;
+      await save();
+    } catch (error) {
+      status("Не получилось сохранить звук завершения: " + error.message);
+    }
+  });
+
 })();

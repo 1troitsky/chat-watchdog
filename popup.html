@@ -17,6 +17,7 @@
     <label>Режим работы
       <select id="mode">
         <option value="auto">Автопродолжение + ошибки</option>
+        <option value="continue">Только автопродолжение</option>
         <option value="errors">Только ошибки — без отправки</option>
       </select>
     </label>
@@ -24,14 +25,20 @@
       <label>Маркер завершения (в начале или конце ответа)<input id="marker" type="text" placeholder="Пусто = каждый завершённый ответ"></label>
     <label class="regex-option"><input id="markerRegex" type="checkbox"> Regex (регулярное выражение)</label>
     <label>Сообщение для отправки<textarea id="reply" rows="2"></textarea></label>
-    <label>Пауза после ответа (секунды; по умолчанию 30)<input id="delaySeconds" type="number" min="1" max="600"></label>
-    <label>Минимум между автоотправками (секунды)<input id="cooldownSeconds" type="number" min="10" max="3600"></label>
+    <label>Пауза после ответа (секунды; по умолчанию 15)<input id="delaySeconds" type="number" min="1" max="600"></label>
+    <label>Минимум между автоотправками (секунды; по умолчанию 30)<input id="cooldownSeconds" type="number" min="10" max="3600"></label>
     </div>
     <label class="regex-option"><input id="toastEnabled" type="checkbox"> Показывать уведомления о событиях</label>
-    <label>Фразы ошибок (по одной в строке)<textarea id="errorWords" rows="4"></textarea></label>
-    <label>Звуковой сигнал
-      <input id="audioFile" type="file" accept="audio/*">
-      <small id="audioName">Файл не выбран</small>
+    <div id="errorSettings">
+      <label>Фразы ошибок (по одной в строке)<textarea id="errorWords" rows="4"></textarea></label>
+      <label>Звуковой сигнал ошибки (повторный при новых ошибках)
+        <input id="audioFile" type="file" accept="audio/*">
+        <small id="audioName">Файл не выбран</small>
+      </label>
+    </div>
+    <label>Звук завершения ответа ИИ (один раз на ответ)
+      <input id="completionAudioFile" type="file" accept="audio/*">
+      <small id="completionAudioName">Файл не выбран</small>
     </label>
     <details>
       <summary>CSS-селекторы (необязательно)</summary>

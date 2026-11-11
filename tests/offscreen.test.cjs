@@ -29,9 +29,9 @@ function harness() {
   };
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "offscreen.js"), "utf8"), context);
-  function send(type, tabId) {
+  function send(type, tabId, kind) {
     return new Promise((resolve) => {
-      listeners[0]({ type, tabId }, {}, resolve);
+      listeners[0]({ type, tabId, kind }, {}, resolve);
     });
   }
   return { send, playing, context };
@@ -60,4 +60,24 @@ test("STOP invalidates an unfinished audio-file load", async () => {
   const result = await start;
   assert.equal(result.cancelled, true);
   assert.equal(playing.length, 0);
+});
+
+
+test("completion and error use independent players; stopping an error does not cut off completion", async () => {
+  const { send, playing } = harness();
+  assert.equal((await send("OFFSCREEN_PLAY", 11, "completion")).ok, true);
+  assert.equal((await send("OFFSCREEN_PLAY", 11, "error")).ok, true);
+  assert.equal(playing.length, 2);
+  assert.equal(playing[0].paused, false);
+  assert.equal(playing[1].paused, false);
+  assert.equal((await send("OFFSCREEN_STOP", 11, "error")).ok, true);
+  assert.equal(playing[0].paused, false);
+  assert.equal(playing[1].paused, true);
+  // Error alerts can recur. They must never replay the completion channel.
+  assert.equal((await send("OFFSCREEN_PLAY", 11, "error")).ok, true);
+  assert.equal(playing.length, 3);
+  assert.equal(playing[0].paused, false);
+  assert.equal((await send("OFFSCREEN_STOP", 11)).ok, true);
+  assert.equal(playing[0].paused, true);
+  assert.equal(playing[2].paused, true);
 });

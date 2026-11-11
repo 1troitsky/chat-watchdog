@@ -24,10 +24,15 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }) {
       for (const key of typeof keys === "string" ? [keys] : keys) saved.delete(key);
     }
   };
+  const playback = [];
   const chrome = {
     runtime: {
-      id: "watchdog-test", onMessage: { addListener(fn) { onMessage = fn; } }
+      id: "watchdog-test", onMessage: { addListener(fn) { onMessage = fn; } },
+      getContexts: async () => [{ contextType: "OFFSCREEN_DOCUMENT" }],
+      getURL: path => "chrome-extension://watchdog-test/" + path,
+      sendMessage: async message => { playback.push(message); return { ok: true }; }
     },
+    offscreen: { createDocument: async () => {} },
     tabs: {
       onUpdated: { addListener(fn) { onUpdated = fn; } },
       onRemoved: { addListener(fn) { onRemoved = fn; } }
@@ -56,12 +61,18 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }) {
       assert.equal(listening, true, "claim must use an async runtime response");
     });
   }
+  async function completion(token, tabId = 7, url = "https://chatgpt.com/c/a") {
+    return new Promise(resolve => {
+      assert.equal(onMessage({ type: "PLAY_COMPLETION", token },
+        { tab: { id: tabId, url } }, resolve), true);
+    });
+  }
   function configure(tabId = 7, overrides = {}) {
     saved.set("tab:" + tabId, {
       enabled: true, mode: "auto", origin: "https://chatgpt.com", ...overrides
     });
   }
-  return { claim, state, configure, saved, clock,
+  return { claim, completion, state, configure, saved, clock, playback,
     get onUpdated() { return onUpdated; }, get onRemoved() { return onRemoved; } };
 }
 
@@ -177,12 +188,48 @@ test("stored global lock deadline persists across worker restart and isolates co
   assert.equal((await app.state()).lockedUntil, 0);
   const claim = await app.claim("answer-1", 7, "https://chatgpt.com/c/a", 1);
   assert.equal(claim.ok, true);
-  assert.equal(claim.lockedUntil, clock.now + 45000);
+  assert.equal(claim.lockedUntil, clock.now + 30000);
   const restarted = createWorker(saved, clock);
-  assert.equal((await restarted.state(7, "https://chatgpt.com/c/a")).lockedUntil, clock.now + 45000);
+  assert.equal((await restarted.state(7, "https://chatgpt.com/c/a")).lockedUntil, clock.now + 30000);
   assert.equal((await restarted.state(8, "https://chatgpt.com/c/b")).lockedUntil, 0);
   clock.now += 20000;
   assert.equal((await restarted.claim("answer-2", 7, "https://chatgpt.com/c/a", 2)).reason, "cooldown");
-  clock.now += 25000;
+  clock.now += 10000;
   assert.equal((await restarted.claim("answer-2", 7, "https://chatgpt.com/c/a", 2)).ok, true);
+});
+
+
+test("completion audio is claimed only once, including after worker restart", async () => {
+  const saved = new Map();
+  const app = createWorker(saved);
+  app.configure(7, { completionAudioName: "finished.mp3" });
+  const res = await Promise.all(Array.from({ length: 8 }, () => app.completion("turn-41")));
+  assert.equal(res.filter(x => x.ok).length, 1);
+  assert.equal(res.filter(x => x.reason === "duplicate").length, 7);
+  assert.equal(app.playback.filter(x => x.type === "OFFSCREEN_PLAY" &&
+    x.kind === "completion").length, 1);
+  const restarted = createWorker(saved);
+  assert.equal((await restarted.completion("turn-41")).reason, "duplicate");
+  assert.equal(restarted.playback.length, 0);
+  assert.equal((await restarted.completion("turn-42")).ok, true);
+  assert.equal(restarted.playback.length, 1);
+});
+
+test("completion sound can play for the continue-only and errors-only modes", async () => {
+  const app = createWorker();
+  app.configure(7, { mode: "errors", completionAudioName: "done.wav" });
+  assert.equal((await app.completion("first")).ok, true);
+  app.configure(7, { mode: "continue", completionAudioName: "done.wav" });
+  assert.equal((await app.completion("second")).ok, true);
+  assert.equal(app.playback.length, 2);
+  assert.equal((await app.claim("new-send", 7, "https://chatgpt.com/c/a", 1)).ok, true);
+});
+
+test("completion notifications reject the wrong origin and disabled tabs", async () => {
+  const app = createWorker();
+  app.configure(7, { completionAudioName: "done.wav" });
+  assert.equal((await app.completion("token", 7, "https://example.com/c/a")).reason, "inactive");
+  app.configure(7, { enabled: false, completionAudioName: "done.wav" });
+  assert.equal((await app.completion("token")).reason, "inactive");
+  assert.equal(app.playback.length, 0);
 });

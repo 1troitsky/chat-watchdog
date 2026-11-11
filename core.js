@@ -3,13 +3,14 @@
 
   const DEFAULTS = Object.freeze({
     enabled: false,
-    mode: "auto",
+    mode: "auto", // auto: continuation+errors, continue: continuation, errors: errors
     marker: "!!!ГОТОВО!!!",
     markerRegex: false,
     reply: "Ок, продолжаем",
-    delaySeconds: 30,
-    delaySecondsVersion: 2,
-    cooldownSeconds: 45,
+    delaySeconds: 15,
+    delaySecondsVersion: 3,
+    cooldownSeconds: 30,
+    cooldownSecondsVersion: 2,
     toastEnabled: true,
     errorWordsVersion: 1,
     errorWords: "Соединение прервано\nОшибка соединения\nНет ответа от ChatGPT. Проверьте подключение к интернету\nВы достигли лимита\nВы достигни лимита\nConnection interrupted\nNetwork error\nRate limit reached\n!!!ЕСТЬ ЗАДАНИЕ ДЛЯ АГЕНТА!!!\n!!!ЖДУ РЕШЕНИЕ!!!\n!!!У НАС ПРОБЛЕМА!!!\n!!НУЖНА ЛОКАЛЬНАЯ ПРОВЕРКА!!!",
@@ -20,6 +21,7 @@
     completionSelector: "",
     errorSelector: "",
     audioName: "",
+    completionAudioName: "",
     origin: ""
   });
 
@@ -40,17 +42,22 @@
       }
     }
     config.enabled = config.enabled === true;
-    config.mode = config.mode === "errors" ? "errors" : "auto";
+    config.mode = ["auto", "continue", "errors"].includes(config.mode) ? config.mode : "auto";
     config.markerRegex = config.markerRegex === true;
     config.toastEnabled = config.toastEnabled !== false;
-    config.delaySeconds = Math.max(1, Math.min(600, Number(config.delaySeconds) || 30));
-    // Migrate the previous default (5s) saved in existing per-tab settings.
-    // Keep explicit new 5s choices and all non-default custom delays intact.
-    if (Number(input.delaySeconds) === 5 && !input.delaySecondsVersion) {
-      config.delaySeconds = 30;
+    config.delaySeconds = Math.max(1, Math.min(600, Number(config.delaySeconds) || 15));
+    // Upgrade previously saved defaults, while retaining explicit values
+    // selected with the new version or earlier non-default custom values.
+    if ((Number(input.delaySeconds) === 5 && !input.delaySecondsVersion) ||
+        (Number(input.delaySeconds) === 30 && Number(input.delaySecondsVersion || 0) < 3)) {
+      config.delaySeconds = 15;
     }
-    config.delaySecondsVersion = 2;
-    config.cooldownSeconds = Math.max(10, Math.min(3600, Number(config.cooldownSeconds) || 45));
+    config.delaySecondsVersion = 3;
+    config.cooldownSeconds = Math.max(10, Math.min(3600, Number(config.cooldownSeconds) || 30));
+    if (Number(input.cooldownSeconds) === 45 && !input.cooldownSecondsVersion) {
+      config.cooldownSeconds = 30;
+    }
+    config.cooldownSecondsVersion = 2;
     for (const key of Object.keys(DEFAULTS)) {
       if (typeof DEFAULTS[key] === "string") {
         config[key] = String(config[key] == null ? "" : config[key]);

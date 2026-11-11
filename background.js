@@ -4,6 +4,7 @@ importScripts("audio-db.js");
 
 const key = (tabId) => "tab:" + tabId;
 const audioEpochs = new Map();
+const completionQueues = new Map();
 const sendClaimQueues = new Map();
 // Scope to the conversation, not the tab: the same chat can be open twice.
 const conversationKey = url => {
@@ -12,9 +13,10 @@ const conversationKey = url => {
 };
 let creatingOffscreen;
 
-function nextAudioEpoch(tabId) {
-  const epoch = (audioEpochs.get(tabId) || 0) + 1;
-  audioEpochs.set(tabId, epoch);
+function nextAudioEpoch(tabId, kind = "error") {
+  const channel = tabId + ":" + kind;
+  const epoch = (audioEpochs.get(channel) || 0) + 1;
+  audioEpochs.set(channel, epoch);
   return epoch;
 }
 
@@ -52,7 +54,7 @@ async function claimSend(tabId, token, assistantOrdinal, sender) {
     }
     const now = Date.now();
     const minIntervalMs = Math.max(10, Math.min(3600,
-      Number(config.cooldownSeconds) || 45)) * 1000;
+      Number(config.cooldownSeconds) || 30)) * 1000;
     // A shared cooldown across ALL content scripts in this tab. An old reply
     // whose dedupe token unexpectedly changes still cannot cause rapid sends.
     if (prior && prior.origin === config.origin &&
@@ -94,31 +96,59 @@ async function ensureOffscreen() {
     creatingOffscreen = chrome.offscreen.createDocument({
       url: "offscreen.html",
       reasons: ["AUDIO_PLAYBACK"],
-      justification: "Play a user-selected alert sound when a chat shows an error."
+      justification: "Play user-selected error and completed-reply notification sounds."
     }).finally(() => { creatingOffscreen = null; });
   }
   await creatingOffscreen;
 }
 
-async function stopTabAudio(tabId) {
-  nextAudioEpoch(tabId);
+async function stopTabAudio(tabId, kind = null) {
+  if (kind) nextAudioEpoch(tabId, kind);
+  else { nextAudioEpoch(tabId, "error"); nextAudioEpoch(tabId, "completion"); }
   if (await offscreenExists()) {
-    await chrome.runtime.sendMessage({ type: "OFFSCREEN_STOP", tabId });
+    await chrome.runtime.sendMessage({ type: "OFFSCREEN_STOP", tabId, kind });
   }
 }
 
-async function playTabAudio(tabId, sender) {
-  const epoch = nextAudioEpoch(tabId);
+async function playTabAudio(tabId, sender, kind = "error") {
+  const epoch = nextAudioEpoch(tabId, kind);
   const items = await chrome.storage.session.get(key(tabId));
   const config = items[key(tabId)];
-  if (!config || !config.enabled || !config.audioName) return;
+  if (!config || !config.enabled ||
+      !(kind === "completion" ? config.completionAudioName : config.audioName) ||
+      (kind === "error" && config.mode === "continue")) return;
   if (!sender.tab?.url || new URL(sender.tab.url).origin !== config.origin) return;
   await ensureOffscreen();
-  if (audioEpochs.get(tabId) !== epoch) return;
-  const result = await chrome.runtime.sendMessage({ type: "OFFSCREEN_PLAY", tabId });
+  if (audioEpochs.get(tabId + ":" + kind) !== epoch) return;
+  const result = await chrome.runtime.sendMessage({ type: "OFFSCREEN_PLAY", tabId, kind });
   if (!result?.ok && !result?.cancelled) {
     console.warn("Chat Watchdog audio:", result?.error || "playback failed");
   }
+}
+
+// Serialize completion claims so two observers or a worker restart cannot
+// replay the same answer. Persist only a bounded set of opaque turn IDs.
+async function playCompletionOnce(tabId, sender, token) {
+  if (typeof token !== "string" || !token || token.length > 2048)
+    return { ok: false, reason: "invalid-token" };
+  if (!sender.tab?.url) return { ok: false, reason: "missing-url" };
+  const page = new URL(sender.tab.url);
+  const sessionKey = "watchdog:completed:" + tabId + ":" + page.origin + page.pathname;
+  const prior = completionQueues.get(sessionKey) || Promise.resolve();
+  const task = prior.catch(() => {}).then(async () => {
+    const values = await chrome.storage.session.get([key(tabId), sessionKey]);
+    const config = values[key(tabId)];
+    if (!config?.enabled || config.origin !== page.origin)
+      return { ok: false, reason: "inactive" };
+    const known = Array.isArray(values[sessionKey]) ? values[sessionKey] : [];
+    if (known.includes(token)) return { ok: false, reason: "duplicate" };
+    await chrome.storage.session.set({ [sessionKey]: [...known.slice(-199), token] });
+    if (config.completionAudioName) await playTabAudio(tabId, sender, "completion");
+    return { ok: true };
+  });
+  completionQueues.set(sessionKey, task);
+  try { return await task; }
+  finally { if (completionQueues.get(sessionKey) === task) completionQueues.delete(sessionKey); }
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -159,7 +189,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           (Number.isFinite(ledger.lockedUntil) ? ledger.lockedUntil :
           (Number.isFinite(ledger.lastClaimAt) ?
             ledger.lastClaimAt + Math.max(10, Math.min(3600,
-              Number(config.cooldownSeconds) || 45)) * 1000 : 0)) : 0;
+              Number(config.cooldownSeconds) || 30)) * 1000 : 0)) : 0;
         sendResponse({ ok: true, lockedUntil: until,
           lastOrdinal: ledger && ledger.origin === config.origin ?
             ledger.maxAssistantOrdinal || 0 : 0 });
@@ -173,12 +203,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch(() => sendResponse(null));
     return true;
   }
+  if (message.type === "PLAY_COMPLETION") {
+    playCompletionOnce(tabId, sender, message.token)
+      .then(sendResponse).catch(error => sendResponse({ ok: false, reason: String(error) }));
+    return true;
+  }
   if (message.type === "PLAY_ERROR") {
     playTabAudio(tabId, sender).catch(console.warn);
     return false;
   }
   if (message.type === "STOP_ERROR") {
-    stopTabAudio(tabId).catch(console.warn);
+    stopTabAudio(tabId, "error").catch(console.warn);
     return false;
   }
   return false;
@@ -214,5 +249,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   // Keep the shared conversation ledger while another tab may be open.
   chrome.storage.session.remove(key(tabId)).catch(() => {});
   ChatWatchdogAudio.remove(tabId).catch(() => {});
-  audioEpochs.delete(tabId);
+  ChatWatchdogAudio.remove(tabId, "completion").catch(() => {});
+  audioEpochs.delete(tabId + ":error");
+  audioEpochs.delete(tabId + ":completion");
 });

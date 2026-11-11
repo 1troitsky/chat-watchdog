@@ -166,8 +166,9 @@ function createHarness(options = {}) {
         markerRegex: options.markerRegex === true,
         marker: options.marker !== undefined ? options.marker : "!!!ГОТОВО!!!",
         reply: "Ок, продолжаем",
+        completionAudioName: options.completionAudioName || "",
         delaySeconds: options.delaySeconds !== undefined ? options.delaySeconds : 5,
-        delaySecondsVersion: 2
+        delaySecondsVersion: 3
       } : null;
       }
     } }
@@ -231,8 +232,8 @@ function createHarness(options = {}) {
         enabled: true, mode,
         marker: options.marker !== undefined ? options.marker : "!!!ГОТОВО!!!",
         delaySeconds: options.delaySeconds !== undefined ? options.delaySeconds : 5,
-        delaySecondsVersion: 2, cooldownSeconds: 45,
-        reply: "Ок, продолжаем"
+        delaySecondsVersion: 3, cooldownSeconds: 45,
+        reply: "Ок, продолжаем", completionAudioName: options.completionAudioName || ""
       } });
     },
     showStop(value) { stopVisible = value; },
@@ -631,7 +632,7 @@ test("busy input retries five times, then stays quiet while a new reply remains 
     await chat.advance(5000);
     chat.poll();
   }
-  const busy = () => chat.journal().filter(e => e.message === "Поле ввода занято");
+  const busy = () => chat.journal().filter(e => e.message.startsWith("Поле ввода занято:"));
   assert.equal(busy().length, 5, "five genuine timer-triggered failed attempts");
   assert.equal(chat.journal().filter(e => /Лимит 5\/5/.test(e.message)).length, 1);
   assert.equal(chat.diagnose().enabled, true);
@@ -721,6 +722,90 @@ test("a zero-width-only composer is considered empty", async () => {
   await chat.baseline();
   chat.setEditorText("\u200B\uFEFF");
   assert.equal(chat.diagnose().editorEmpty, true);
+  await chat.advance(1600);
+  chat.poll();
+  await chat.advance(5000);
+  await chat.advance(250);
+  assert.equal(chat.clicks(), 1);
+});
+
+
+test("completion sound plays exactly once for a markerless reply, even in errors-only mode", async () => {
+  const chat = createHarness({ mode: "errors", completionAudioName: "done.mp3",
+    marker: "!!!ГОТОВО!!!", replyText: "Обычный ответ без маркера" });
+  await chat.baseline();
+  await chat.advance(3100);
+  chat.poll();
+  assert.equal(chat.sentRuntimeMessages.filter(x => x === "PLAY_COMPLETION").length, 1);
+  chat.rerenderOldTurn();
+  chat.poll();
+  await chat.advance(20000);
+  for (let i = 0; i < 5; i++) chat.poll();
+  assert.equal(chat.sentRuntimeMessages.filter(x => x === "PLAY_COMPLETION").length, 1,
+    "rerenders and repeated polling must not replay the completion audio");
+  assert.equal(chat.clicks(), 0, "errors-only never auto-sends");
+  chat.nextUser();
+  chat.nextAssistant();
+  chat.poll();
+  await chat.advance(3100);
+  chat.poll();
+  assert.equal(chat.sentRuntimeMessages.filter(x => x === "PLAY_COMPLETION").length, 2,
+    "next genuinely new reply gets its own completion alert");
+});
+
+test("completion audio waits for Stop to vanish and stays silent during streaming", async () => {
+  const chat = createHarness({ mode: "errors", completionAudioName: "done.mp3",
+    replyText: "Обычный ответ" });
+  await chat.baseline();
+  chat.showStop(true);
+  chat.poll();
+  await chat.advance(25000);
+  chat.poll();
+  assert.equal(chat.sentRuntimeMessages.filter(x => x === "PLAY_COMPLETION").length, 0);
+  chat.showStop(false);
+  chat.poll();
+  assert.equal(chat.sentRuntimeMessages.filter(x => x === "PLAY_COMPLETION").length, 0);
+  await chat.advance(3100);
+  chat.poll();
+  assert.equal(chat.sentRuntimeMessages.filter(x => x === "PLAY_COMPLETION").length, 1);
+});
+
+test("continue-only ignores error alerts yet sends the next marked reply", async () => {
+  const chat = createHarness({ mode: "continue", completionAudioName: "done.mp3" });
+  await chat.baseline();
+  chat.setError(true);
+  chat.poll();
+  assert.equal(chat.sentRuntimeMessages.filter(x => x === "PLAY_ERROR").length, 0);
+  await chat.advance(3100);
+  chat.poll();
+  assert.equal(chat.sentRuntimeMessages.filter(x => x === "PLAY_COMPLETION").length, 1);
+  await chat.advance(5000);
+  await chat.advance(250);
+  assert.equal(chat.clicks(), 1);
+});
+
+test("persistent Stop costs five scheduled attempts, then leaves monitor ready for next turn", async () => {
+  const chat = createHarness();
+  await chat.baseline();
+  chat.showStop(true);
+  chat.poll();
+  await chat.advance(6000);
+  chat.poll();
+  for (let i = 0; i < 5; i++) {
+    await chat.advance(5000);
+    chat.poll();
+  }
+  const stopFailures = () => chat.journal().filter(x => x.message.startsWith("Кнопка Stop блокирует отправку:"));
+  assert.equal(stopFailures().length, 5);
+  assert.equal(chat.diagnose().enabled, true);
+  assert.equal(chat.diagnose().pending, false);
+  await chat.advance(120000);
+  for (let i = 0; i < 8; i++) chat.poll();
+  assert.equal(stopFailures().length, 5);
+  chat.showStop(false);
+  chat.nextUser();
+  chat.nextAssistant();
+  chat.poll();
   await chat.advance(1600);
   chat.poll();
   await chat.advance(5000);

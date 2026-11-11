@@ -5,16 +5,16 @@ const Core = require("../core.js");
 test("defaults are safe and disabled", () => {
   const value = Core.normalize();
   assert.equal(value.enabled, false);
-  assert.equal(value.delaySeconds, 30);
+  assert.equal(value.delaySeconds, 15);
   assert.equal(value.reply, "Ок, продолжаем");
 });
-test("old saved five-second default migrates to 30 seconds, custom delays stay unchanged", () => {
-  assert.equal(Core.normalize({ delaySeconds: 5 }).delaySeconds, 30);
+test("old saved default migrates to 15 seconds, custom delays stay unchanged", () => {
+  assert.equal(Core.normalize({ delaySeconds: 5 }).delaySeconds, 15);
   assert.equal(Core.normalize({ delaySeconds: 5, delaySecondsVersion: 2 }).delaySeconds, 5);
   assert.equal(Core.normalize({ delaySeconds: 13 }).delaySeconds, 13);
   const upgraded = Core.normalize({ delaySeconds: 5 });
-  assert.equal(Core.normalize(upgraded).delaySeconds, 30);
-  assert.equal(upgraded.delaySecondsVersion, 2);
+  assert.equal(Core.normalize(upgraded).delaySeconds, 15);
+  assert.equal(upgraded.delaySecondsVersion, 3);
 });
 
 test("limits the delay and normalizes strings", () => {
@@ -227,4 +227,17 @@ test("uses different selectors for different assistants", () => {
   assert.match(Core.selectorsFor("chatgpt.com").editor, /pending-conversation-input/);
   assert.match(Core.selectorsFor("chatgpt.com").send, /aria-label="Отправить"/);
   assert.match(Core.selectorsFor("claude.ai").assistant, /claude-message/);
+});
+
+
+test("three exclusive modes normalize independently", () => {
+  assert.equal(Core.normalize({ mode: "auto" }).mode, "auto");
+  assert.equal(Core.normalize({ mode: "continue" }).mode, "continue");
+  assert.equal(Core.normalize({ mode: "errors" }).mode, "errors");
+  assert.equal(Core.normalize({ mode: "unknown" }).mode, "auto");
+  assert.equal(Core.normalize().delaySeconds, 15);
+  assert.equal(Core.normalize().cooldownSeconds, 30);
+  assert.equal(Core.normalize({ delaySeconds: 9, delaySecondsVersion: 3 }).delaySeconds, 9);
+  assert.equal(Core.normalize({ cooldownSeconds: 80 }).cooldownSeconds, 80);
+  assert.equal(Core.normalize({ completionAudioName: "done.mp3" }).completionAudioName, "done.mp3");
 });

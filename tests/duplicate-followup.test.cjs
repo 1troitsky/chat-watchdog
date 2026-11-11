@@ -219,6 +219,13 @@ function createHarness(options = {}) {
       } });
     },
     showStop(value) { stopVisible = value; },
+    setEditorText(text) { editor.innerText = text; },
+    editorText: () => editor.innerText,
+    journal() {
+      let events = [];
+      messageListener({ type: "WATCHDOG_LOG" }, null, reply => { events = reply.events; });
+      return events;
+    },
     stopClicks: () => stopClicks
   };
 }
@@ -593,4 +600,83 @@ test("the expired timer reports Stop as the cancellation reason, not a fake send
   assert.equal(chat.clicks(), 0);
   assert.match(chat.diagnose().lastAutoDecision, /Stop/);
   assert.equal(chat.sentRuntimeMessages.filter(x => x === "CLAIM_SEND").length, 0);
+});
+
+
+test("busy human draft triggers exactly five delayed attempts, then keeps monitoring", async () => {
+  const chat = createHarness();
+  await chat.baseline();
+  chat.setEditorText("My unfinished message — do not overwrite");
+  await chat.advance(1600);
+  chat.poll();
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await chat.advance(5000);
+    chat.poll();
+  }
+  const busy = () => chat.journal().filter(e => e.message.startsWith("Поле ввода занято:"));
+  assert.equal(busy().length, 5, "each delayed send gets one failure count");
+  assert.match(busy().at(-1).message, /5\/5 попыток/);
+  assert.equal(chat.editorText(), "My unfinished message — do not overwrite");
+  assert.equal(chat.diagnose().pending, false);
+  assert.equal(chat.diagnose().enabled, true);
+  await chat.advance(90000);
+  for (let i = 0; i < 12; i++) chat.poll();
+  await chat.advance(90000);
+  assert.equal(busy().length, 5, "exhausted reply must not be scheduled again");
+  assert.equal(chat.clicks(), 0);
+  chat.setEditorText("");
+  chat.nextUser();
+  chat.nextAssistant();
+  chat.poll();
+  await chat.advance(1600);
+  chat.poll();
+  await chat.advance(5000);
+  await chat.advance(250);
+  assert.equal(chat.clicks(), 1, "a later reply must still be sent");
+});
+
+test("unavailable Send is limited and only extension-owned draft is cleared", async () => {
+  const chat = createHarness();
+  await chat.baseline();
+  chat.enableSend(false);
+  await chat.advance(1600);
+  chat.poll();
+  await chat.advance(5000); // insert the auto follow-up
+  for (let i = 0; i < 10; i++) await chat.advance(200); // mock timers advance per 200-ms retry
+  assert.equal(chat.clicks(), 0);
+  assert.equal(chat.editorText(), "Ок, продолжаем");
+  for (let i = 0; i < 4; i++) {
+    chat.poll();
+    await chat.advance(5000);
+  }
+  const blocked = chat.journal().filter(e =>
+    /Кнопка отправки недоступна:|Поле ввода занято:/.test(e.message));
+  assert.equal(blocked.length, 5);
+  assert.match(blocked.at(-1).message, /5\/5 попыток/);
+  assert.equal(chat.editorText(), "", "remove only the unchanged extension draft");
+  chat.enableSend(true);
+  chat.poll();
+  await chat.advance(30000);
+  assert.equal(chat.clicks(), 0, "skipped reply must not send after button reappears");
+});
+
+test("Stop appearing after a send has been scheduled consumes one retry, not the stream", async () => {
+  const chat = createHarness();
+  await chat.baseline();
+  chat.showStop(true);
+  await chat.advance(8000);
+  chat.poll(); // While generation is running this is not a send attempt.
+  assert.equal(chat.journal().some(e => /попытка 1\/5/.test(e.message)), false);
+  chat.showStop(false);
+  chat.poll(); // Schedule one follow-up.
+  chat.showStop(true);
+  await chat.advance(5000); // Stop appeared during the delay.
+  const blocked = chat.journal().filter(e => e.message.startsWith("Кнопка Stop блокирует отправку:"));
+  assert.equal(blocked.length, 1);
+  assert.match(blocked[0].message, /1\/5/);
+  chat.showStop(false);
+  chat.poll();
+  await chat.advance(5000);
+  await chat.advance(250);
+  assert.equal(chat.clicks(), 1);
 });

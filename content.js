@@ -31,6 +31,9 @@
   let lastAutoDecisionAt = null;
   const eventLog = [];
   const lastEventSignature = new Map();
+  const MAX_BLOCKED_SEND_ATTEMPTS = 5;
+  let blockedSend = null;
+  let watchdogDraft = null;
 
   function query(selector) {
     if (!selector) return [];
@@ -179,6 +182,44 @@
     if (!messageIds.has(node)) messageIds.set(node, nextMessageId++);
     return route + "|" + (keyFromDom || "dom:" + messageIds.get(node)) +
       "|" + count + "|" + text;
+  }
+
+  // Keep the limit per assistant turn, not per timer or the text key which
+  // may change while ChatGPT is streaming or repainting its DOM.
+  function blockedSendToken(result) {
+    return sendToken(result.node, textOf(result.node), result.count);
+  }
+
+  function blockedSendExhausted(result) {
+    return blockedSend && blockedSend.exhausted &&
+      blockedSend.token === blockedSendToken(result);
+  }
+
+  // Called only after a *scheduled send attempt* failed. The Stop button
+  // observed while the assistant is still streaming does not count as an
+  // attempt: regular generation must not exhaust this budget.
+  function noteBlockedSend(result, reason) {
+    const token = blockedSendToken(result);
+    if (!blockedSend || blockedSend.token !== token)
+      blockedSend = { token, attempts: 0, exhausted: false };
+    if (blockedSend.exhausted) return;
+    blockedSend.attempts++;
+    if (blockedSend.attempts >= MAX_BLOCKED_SEND_ATTEMPTS) {
+      blockedSend.exhausted = true;
+      cancelPending();
+      // An unsent message inserted by this extension may keep the composer
+      // occupied forever. Remove only our unchanged text, never a user draft.
+      if (watchdogDraft && watchdogDraft.token === token) {
+        if (editorText(watchdogDraft.editor) === watchdogDraft.text)
+          fillEditor(watchdogDraft.editor, "");
+        watchdogDraft = null;
+      }
+      autoDecision(reason + ": 5/5 попыток. Текущий ответ пропущен; " +
+        "монитор продолжает работу");
+    } else {
+      autoDecision(reason + ": попытка " + blockedSend.attempts +
+        "/" + MAX_BLOCKED_SEND_ATTEMPTS);
+    }
   }
 
   function textOf(element) {
@@ -468,6 +509,7 @@
     const text = textOf(result.node);
     const key = messageKey(result.node, result.count, text);
     const assistantToken = sendToken(result.node, text, result.count);
+    if (blockedSendExhausted(result)) return;
     if (key !== expectedKey) {
       autoDecision("Отправка отменена: ответ ИИ изменился за время ожидания");
       return;
@@ -483,7 +525,7 @@
       return;
     }
     if (hasStopButton(selectors.stop)) {
-      autoDecision("Отправка отменена: генерация ещё идёт (кнопка Stop)");
+      noteBlockedSend(result, "Кнопка Stop блокирует отправку");
       return;
     }
     if (config.completionSelector && !query(config.completionSelector).some(visible)) {
@@ -503,7 +545,7 @@
     }
     const editor = findEditor(selectors.editor);
     if (!editor || editorText(editor)) {
-      recordEvent("blocked", editor ? "Поле ввода занято" : "Поле ввода не найдено");
+      noteBlockedSend(result, editor ? "Поле ввода занято" : "Поле ввода не найдено");
       return; // Never overwrite a human draft.
     }
     // A stable finished reply must be the newest visible turn.
@@ -514,6 +556,7 @@
     sending = true;
     try {
       fillEditor(editor, config.reply);
+      watchdogDraft = { editor, text: config.reply, token: assistantToken };
       for (let attempt = 0; attempt < 10; attempt++) {
         await new Promise(resolve => setTimeout(resolve, 200));
         if (!config.enabled || config.mode !== "auto" ||
@@ -528,7 +571,7 @@
         // CRITICAL: recheck stop state on EVERY retry and immediately
         // before click. A Stop button must NEVER be mistaken for Send.
         if (hasStopButton(selectors.stop)) {
-          recordEvent("blocked", "Отправка отменена: появилась кнопка Stop");
+          noteBlockedSend(result, "Кнопка Stop блокирует отправку");
           return;
         }
         if (checkError() || cooldownRemainingMs()) return;
@@ -541,8 +584,11 @@
         }
         const button = findSendButton(selectors.send);
         if (!button) continue;
-        if (!config.enabled || config.mode !== "auto" || modeEpoch !== expectedModeEpoch ||
-            Core.isStopAction(button) || hasStopButton(selectors.stop)) return;
+        if (!config.enabled || config.mode !== "auto" || modeEpoch !== expectedModeEpoch) return;
+        if (Core.isStopAction(button) || hasStopButton(selectors.stop)) {
+          noteBlockedSend(result, "Кнопка Stop блокирует отправку");
+          return;
+        }
         const userTurn = latestUserTurn().logicalTurn;
         if (sendGuard.alreadySent(text, userTurn)) return;
         // The background worker owns the deduplication ledger for this tab.
@@ -597,12 +643,13 @@
         lastClickAt = Date.now();
         sendClicks++;
         finalButton.click();
+        watchdogDraft = null;
         autoDecision("Отправлено одно сообщение автопродолжения", "sent");
         recordEvent("sent", "Отправлено: " + config.reply);
         return;
       }
-      recordEvent("blocked", "Кнопка отправки недоступна; текст оставлен в поле");
-      console.warn("Chat Watchdog: send button unavailable; follow-up left in editor.");
+      noteBlockedSend(result, "Кнопка отправки недоступна");
+      console.warn("Chat Watchdog: send button unavailable.");
     } finally {
       sending = false;
     }
@@ -661,6 +708,7 @@
       if (Core.completionMatches(text, config.marker, config.markerRegex)) handled.add(key);
       return;
     }
+    if (blockedSendExhausted(result)) return;
     if (handled.has(key) || sending ||
       result.ordinal <= lastClaimedAssistantOrdinal ||
       submittedAssistantTokens.has(sendToken(result.node, text, result.count)) ||

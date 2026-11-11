@@ -1,5 +1,7 @@
 # Chat Watchdog
 
+> **0.2.12 editor detection hotfix (candidate):** Preserve the original ZIP's auto-continue, error monitoring, and five-send-attempt limit. On ChatGPT pages with multiple text editors, select the live composer associated with the Send button. Read rendered contenteditable text without falling back to hidden DOM text when the field is visually empty. The diagnostic report now records the selected editor, editor count, visible-text length and whether non-rendered DOM text exists (never the draft contents). Genuine user drafts are not cleared or overwritten.
+
 A small, local Chrome/Chromium Manifest V3 extension for continuing AI chat tasks automatically.
 
 ## Features

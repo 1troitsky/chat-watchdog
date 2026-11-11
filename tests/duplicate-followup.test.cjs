@@ -56,12 +56,27 @@ function createHarness(options = {}) {
     return node;
   };
   const editor = {
+    id: "prompt-textarea",
     tagName: "DIV",
     isContentEditable: true,
     innerText: "",
+    textContent: "",
     getClientRects: () => [1],
     focus() {},
-    dispatchEvent() {}
+    dispatchEvent() {},
+    closest(selector) { return selector === "form" ? composerForm : null; }
+  };
+  const ghostEditor = {
+    id: "pending-conversation-input",
+    tagName: "DIV", isContentEditable: true,
+    innerText: "Старый текст в другом поле", textContent: "Старый текст в другом поле",
+    getClientRects: () => [1],
+    closest() { return null; }
+  };
+  const composerForm = {
+    querySelector(selector) {
+      return selector.includes('send-button') ? send : null;
+    }
   };
   const send = {
     get disabled() { return !sendAvailable; },
@@ -70,6 +85,7 @@ function createHarness(options = {}) {
     click() {
       clicks++;
       editor.innerText = ""; // ChatGPT clears the composer on submit.
+      if (options.hiddenDomTextAfterSend) editor.textContent = "Ок, продолжаем";
       response = assistantNode(); // React repaints the old reply, not a new turn.
       assistantHistory[assistantHistory.length - 1] = response;
     }
@@ -111,7 +127,8 @@ function createHarness(options = {}) {
       if (selector === '[data-user-message-bubble="true"]') return userMessages;
       if (selector.startsWith('[role="alert"], [role="status"]')) return errorVisible ? [alert] : [];
       if (selector.includes('button[data-testid="stop-button"]')) return stopVisible ? [stop] : [];
-      if (selector.includes('[contenteditable="true"][role="textbox"]')) return [editor];
+      if (selector.includes('[contenteditable="true"][role="textbox"]'))
+        return options.ghostComposerFirst ? [ghostEditor, editor] : [editor];
       if (selector.includes('aria-label="Отправить"')) return [send];
       if (selector.includes('[data-message-author-role="assistant"]')) {
         return assistantHistory.slice();
@@ -220,6 +237,7 @@ function createHarness(options = {}) {
     },
     showStop(value) { stopVisible = value; },
     setEditorText(value) { editor.innerText = value; },
+    editorText: () => editor.innerText,
     setAssistantText(value) { if (response) response.innerText = value; },
     journal() {
       let events = [];
@@ -646,4 +664,66 @@ test("streaming marked text does not spend send attempts before the timer fires"
   await chat.advance(5000);
   await chat.advance(250);
   assert.equal(chat.clicks(), 1, "finally completed reply should send");
+});
+
+
+test("visually empty composer is not blocked by residual hidden textContent", async () => {
+  const chat = createHarness({ hiddenDomTextAfterSend: true });
+  await chat.sendFirst();
+  chat.nextUser();
+  chat.nextAssistant();
+  await chat.advance(46000);
+  chat.poll();
+  await chat.advance(1600);
+  chat.poll();
+  await chat.advance(5000);
+  await chat.advance(250);
+  assert.equal(chat.clicks(), 2, "second reply must work even when hidden DOM text persists");
+  const snapshot = chat.diagnose();
+  assert.equal(snapshot.editorFound, true);
+  assert.equal(snapshot.editorEmpty, true, "empty innerText must override stale textContent");
+  assert.equal(snapshot.editorHiddenDomText, true);
+  assert.equal(snapshot.editorRenderedLength, 0);
+});
+
+test("a stale secondary editor must not block the live ChatGPT composer", async () => {
+  const chat = createHarness({ ghostComposerFirst: true });
+  await chat.baseline();
+  await chat.advance(1600);
+  chat.poll();
+  await chat.advance(5000);
+  await chat.advance(250);
+  assert.equal(chat.clicks(), 1, "send uses live composer, not stale DOM-first candidate");
+  const snapshot = chat.diagnose();
+  assert.equal(snapshot.editorCandidates, 2);
+  assert.equal(snapshot.editorElement, "prompt-textarea");
+  assert.equal(snapshot.editorEmpty, true);
+});
+
+test("an actual user draft in the live composer remains untouched", async () => {
+  const chat = createHarness({ ghostComposerFirst: true });
+  await chat.baseline();
+  chat.setEditorText("Набираю сообщение вручную");
+  await chat.advance(1600);
+  chat.poll();
+  for (let i = 0; i < 5; i++) {
+    await chat.advance(5000);
+    chat.poll();
+  }
+  assert.equal(chat.clicks(), 0);
+  assert.equal(chat.editorText(), "Набираю сообщение вручную");
+  assert.equal(chat.diagnose().editorEmpty, false);
+});
+
+
+test("a zero-width-only composer is considered empty", async () => {
+  const chat = createHarness();
+  await chat.baseline();
+  chat.setEditorText("\u200B\uFEFF");
+  assert.equal(chat.diagnose().editorEmpty, true);
+  await chat.advance(1600);
+  chat.poll();
+  await chat.advance(5000);
+  await chat.advance(250);
+  assert.equal(chat.clicks(), 1);
 });

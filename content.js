@@ -190,8 +190,23 @@
   }
 
   function findEditor(selector) {
-    return query(selector).find((element) => visible(element) &&
+    const editors = query(selector).filter((element) => visible(element) &&
       (element.isContentEditable || /^(TEXTAREA|INPUT)$/.test(element.tagName)));
+    if (editors.length <= 1) return editors[0];
+    // ChatGPT may keep a secondary or stale composer in the DOM. Prefer the
+    // editor whose form owns the live Send button instead of DOM order.
+    const sendSelector = currentSelectors().send;
+    const linked = editors.filter((element) => {
+      const form = typeof element.closest === "function" && element.closest("form");
+      return !!(form && typeof form.querySelector === "function" &&
+        form.querySelector(sendSelector));
+    });
+    const candidates = linked.length ? linked : editors;
+    const focused = candidates.find((element) =>
+      element === document.activeElement ||
+      (typeof element.contains === "function" && element.contains(document.activeElement)));
+    if (focused) return focused;
+    return candidates.find((element) => element.id === "prompt-textarea") || candidates[0];
   }
 
   function findSendButton(selector) {
@@ -425,8 +440,13 @@
   }
 
   function editorText(editor) {
-    return editor.isContentEditable ? (editor.innerText || editor.textContent || "").trim()
-      : String(editor.value || "").trim();
+    // innerText is the rendered, user-visible text. An empty innerText must
+    // NOT fall back to textContent: hidden placeholder/stale DOM text can
+    // persist after ChatGPT clears a ProseMirror contenteditable field.
+    const text = editor.isContentEditable
+      ? (typeof editor.innerText === "string" ? editor.innerText : editor.textContent || "")
+      : String(editor.value || "");
+    return text.replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
   }
 
   function fillEditor(editor, value) {
@@ -747,6 +767,13 @@
       toastEnabled: config.toastEnabled,
       editorFound: !!editor,
       editorEmpty: !!editor && !editorText(editor),
+      editorElement: editor ? (editor.id || editor.tagName.toLowerCase()) : null,
+      editorCandidates: query(selectors.editor).filter((element) => visible(element) &&
+        (element.isContentEditable || /^(TEXTAREA|INPUT)$/.test(element.tagName))).length,
+      editorRenderedLength: editor ? editorText(editor).length : 0,
+      editorHiddenDomText: !!(editor && editor.isContentEditable &&
+        typeof editor.innerText === "string" && !editor.innerText.trim() &&
+        (editor.textContent || "").trim()),
       sendButtonFound: !!findSendButton(selectors.send),
       stopButtonVisible: hasStopButton(selectors.stop),
       pending: !!pending,

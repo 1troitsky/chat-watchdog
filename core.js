@@ -40,7 +40,7 @@
       }
     }
     config.enabled = config.enabled === true;
-    config.mode = ["auto", "continue", "errors"].includes(config.mode) ? config.mode : "auto";
+    config.mode = config.mode === "errors" ? "errors" : "auto";
     config.markerRegex = config.markerRegex === true;
     config.toastEnabled = config.toastEnabled !== false;
     config.delaySeconds = Math.max(1, Math.min(600, Number(config.delaySeconds) || 30));

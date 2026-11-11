@@ -228,12 +228,3 @@ test("uses different selectors for different assistants", () => {
   assert.match(Core.selectorsFor("chatgpt.com").send, /aria-label="Отправить"/);
   assert.match(Core.selectorsFor("claude.ai").assistant, /claude-message/);
 });
-
-
-test("three modes round-trip; obsolete values safely default to combined", () => {
-  for (const mode of ["auto", "continue", "errors"]) {
-    assert.equal(Core.normalize({ mode }).mode, mode);
-    assert.equal(Core.normalize(Core.normalize({ mode })).mode, mode);
-  }
-  assert.equal(Core.normalize({ mode: "unexpected" }).mode, "auto");
-});

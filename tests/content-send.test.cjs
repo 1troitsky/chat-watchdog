@@ -26,7 +26,7 @@ test("a short first assistant reply after enabling an empty chat is submitted", 
     location: { hostname: "chatgpt.com", href: "https://chatgpt.com/c/test" },
     Event: class { constructor(type, options) { this.type = type; this.bubbles = options?.bubbles; } },
     MutationObserver: class { observe() {} },
-    document: { documentElement: {}, addEventListener() {}, removeEventListener() {}, querySelectorAll(selector) {
+    document: { documentElement: {}, querySelectorAll(selector) {
       if (selector.includes('data-message-author-role="assistant"')) return assistant ? [assistant] : [];
       if (selector.includes("pending-conversation-input")) return [editor];
       if (selector.includes("aria-label=\"Отправить\"")) return [sendButton];
@@ -37,10 +37,7 @@ test("a short first assistant reply after enabling an empty chat is submitted", 
       sendMessage: (msg) => Promise.resolve(msg.type === "GET_CONFIG" ?
         { enabled: true, marker: "!!!ГОТОВО!!!", delaySeconds: 5,
           delaySecondsVersion: 2, reply: "Ок, продолжаем" } :
-        msg.type === "ARM_SEND" ? { ok: true, armId: "mock-arm",
-          dueAt: now + 5000 } :
-        msg.type === "CANCEL_ARM" ? { ok: true } :
-        msg.type === "CLAIM_SEND" && msg.armId === "mock-arm" ? { ok: true } :
+        msg.type === "CLAIM_SEND" ? { ok: true } :
         msg.type === "GET_SEND_STATE" ? { ok: true, lockedUntil: 0 } : null)
     } }
   };

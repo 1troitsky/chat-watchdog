@@ -16,10 +16,12 @@
   const acknowledgedAssistantAlerts = new Set();
   const sendGuard = Core.createSendGuard();
   const submittedAssistantTokens = new Set();
+  const failedSendAttempts = new Map();
+  const abandonedAssistantTokens = new Set();
+  const MAX_SEND_ATTEMPTS = 5;
   let lastClaimedAssistantOrdinal = 0;
   let dialogRoot = null;
   let dialogError = null;
-  let activeAlertId = "";
   let sendClicks = 0;
   let lastClickAt = 0;
   let globalLockedUntil = 0;
@@ -27,9 +29,8 @@
   let hydrationEpoch = 0;
   let sending = false;
   let modeEpoch = 0;
+  let receivedLiveConfig = false;
   let lastUserTurnAtSend = null;
-  let lastObservedUserTurn = null;
-  let lastComposerInteraction = null;
   let lastAutoDecision = "Проверка ещё не проводилась";
   let lastAutoDecisionAt = null;
   const eventLog = [];
@@ -85,30 +86,6 @@
       };
     }
     return { node: null, logicalTurn: null };
-  }
-
-  // Observe actual user-turn appearances independently from our own Send
-  // mechanism. This records metadata only; never inspect, log, or persist
-  // user message text. An observed DOM turn is NOT proof a network send.
-  function observeUserTurn() {
-    const current = latestUserTurn().logicalTurn;
-    if (!current) return;
-    if (lastObservedUserTurn === null) {
-      lastObservedUserTurn = current;
-      return;
-    }
-    if (lastObservedUserTurn === current) return;
-    lastObservedUserTurn = current;
-    const gesture = lastComposerInteraction;
-    const recent = gesture && Date.now() - gesture.at < 15000;
-    const source = recent ?
-      gesture.event + ":" + (gesture.trusted ? "trusted" : "synthetic") :
-      "no-recent-composer-event";
-    recordEvent("user-turn", "В DOM появился новый ход пользователя; ввод: " + source);
-    chrome.runtime.sendMessage({
-      type: "WATCHDOG_USER_TURN",
-      observation: source
-    }).catch(() => {});
   }
 
   function followsUser(assistant, user) {
@@ -223,35 +200,6 @@
       !button.disabled && button.getAttribute("aria-disabled") !== "true");
   }
 
-  // Chrome exposes isTrusted on UI events. It is supporting evidence, not
-  // proof of human intent, so label it explicitly instead of guessing.
-  function trackComposerInteraction(event) {
-    if (!config.enabled || !event || !event.target) return;
-    const selectors = currentSelectors();
-    const editor = findEditor(selectors.editor);
-    const button = findSendButton(selectors.send);
-    const within = (element, target) => !!element &&
-      (element === target || typeof element.contains === "function" &&
-        element.contains(target));
-    const inEditor = within(editor, event.target);
-    const onSend = within(button, event.target);
-    let type = null;
-    if (event.type === "keydown" && inEditor && event.key === "Enter")
-      type = "enter";
-    else if (event.type === "input" && inEditor) type = "input";
-    else if ((event.type === "click" || event.type === "pointerdown") && onSend)
-      type = event.type === "click" ? "send-click" : "send-pointer";
-    else if (event.type === "submit" && (inEditor ||
-      (editor && typeof event.target.contains === "function" &&
-        event.target.contains(editor)))) type = "submit";
-    if (type) lastComposerInteraction = {
-      event: type, trusted: event.isTrusted === true, at: Date.now()
-    };
-  }
-
-  for (const name of ["input", "keydown", "pointerdown", "click", "submit"])
-    document.addEventListener(name, trackComposerInteraction, true);
-
   function hasStopButton(selector) {
     if (query(selector).some(visible)) return true;
     if (!isChatGPT()) return false;
@@ -261,47 +209,12 @@
       .some(button => visible(button) && Core.isStopAction(button));
   }
 
-  const alertHostSelector = "#chat-watchdog-alert-host";
-  const alertAckAttribute = "data-chat-watchdog-ack";
-
-  function alertHosts() {
-    return query(alertHostSelector);
-  }
-
-  // An acknowledgement is shared via the DOM, not globalThis: extension
-  // updates and isolated injected script worlds can run simultaneously.
-  // Never store the error phrase or any chat content in a DOM attribute.
-  function alertIdentity(signature) {
-    const input = route + "\u0000" + signature;
-    let hash = 2166136261;
-    for (let i = 0; i < input.length; i++) {
-      hash ^= input.charCodeAt(i);
-      hash = Math.imul(hash, 16777619);
-    }
-    return (hash >>> 0).toString(36);
-  }
-
-  function isAcknowledged(id) {
-    const root = document.documentElement;
-    return !!(root && typeof root.getAttribute === "function" &&
-      root.getAttribute(alertAckAttribute) === id);
-  }
-
-  function acknowledge(id) {
-    const root = document.documentElement;
-    if (id && root && typeof root.setAttribute === "function")
-      root.setAttribute(alertAckAttribute, id);
-  }
-
   function closeDialog() {
-    acknowledge(activeAlertId);
-    // Close ALL overlay hosts, including any orphaned hosts left by a
-    // previous content-script world. One click must never mean 10 clicks.
-    for (const host of alertHosts()) host.remove();
-    if (dialogRoot && !alertHosts().includes(dialogRoot)) dialogRoot.remove();
-    dialogRoot = null;
-    dialogError = null;
-    activeAlertId = "";
+    if (dialogRoot) {
+      dialogRoot.remove();
+      dialogRoot = null;
+      dialogError = null;
+    }
     document.removeEventListener("keydown", handleDialogKeydown, true);
     chrome.runtime.sendMessage({ type: "STOP_ERROR" }).catch(() => {});
   }
@@ -314,19 +227,10 @@
     }
   }
 
-  function showDialog(message, identity) {
-    if (isAcknowledged(identity)) return false;
-    // Enforce one actual DOM overlay across all instances, not only the
-    // one overlay referenced by this content-script's local variables.
-    const existing = alertHosts();
-    if (existing.length) {
-      for (const extra of existing.slice(1)) extra.remove();
-      return false;
-    }
+  function showDialog(message) {
     if (dialogRoot) {
-      dialogRoot = null;
-      dialogError = null;
-      activeAlertId = "";
+      dialogError.textContent = message;
+      return;
     }
     const host = document.createElement("div");
     host.id = "chat-watchdog-alert-host";
@@ -369,11 +273,9 @@
     dialogError.textContent = "Обнаружена ошибка: " + message;
     shadow.querySelector(".close").addEventListener("click", closeDialog);
     dialogRoot = host;
-    activeAlertId = identity;
     (document.body || document.documentElement).appendChild(host);
     document.addEventListener("keydown", handleDialogKeydown, true);
     shadow.querySelector(".close").focus();
-    return true;
   }
 
   // Prefer the most specific descendant containing the error. Some sites
@@ -443,14 +345,10 @@
     const fresh = errorTracker.observe(matches);
     if (fresh) {
       recordEvent("error", "Ошибка: " + fresh.phrase);
-      const id = alertIdentity(fresh.signature);
-      if (isAcknowledged(id)) return assistantErrorActive || matches.length > 0;
-      if (dialogRoot && alertHosts().includes(dialogRoot) && dialogError) {
-        activeAlertId = id;
+      if (dialogRoot) {
         dialogError.textContent = "Обнаружена ошибка: " + fresh.phrase;
-      } else if (showDialog(fresh.phrase, id)) {
-        // A second script instance must neither overlay the first nor
-        // start a duplicate alarm.
+      } else {
+        showDialog(fresh.phrase);
         chrome.runtime.sendMessage({ type: "PLAY_ERROR" }).catch(() => {});
       }
     }
@@ -469,9 +367,7 @@
       message
     });
     if (eventLog.length > 40) eventLog.shift();
-    // Passive provenance events belong in diagnostics, not as a toast for
-    // every normal user message.
-    if (config.toastEnabled && type !== "user-turn") showToast(message, type);
+    if (config.toastEnabled) showToast(message, type);
   }
 
   function showToast(message, type) {
@@ -495,6 +391,30 @@
     lastAutoDecision = message;
     lastAutoDecisionAt = new Date(Date.now()).toLocaleTimeString("ru-RU");
     recordEvent(eventType, message);
+  }
+
+  function recordSendBlock(token, key, reason) {
+    if (abandonedAssistantTokens.has(token)) return;
+    const attempts = (failedSendAttempts.get(token) || 0) + 1;
+    failedSendAttempts.set(token, attempts);
+    if (failedSendAttempts.size > 500)
+      failedSendAttempts.delete(failedSendAttempts.keys().next().value);
+    if (attempts >= MAX_SEND_ATTEMPTS) {
+      abandonedAssistantTokens.add(token);
+      if (abandonedAssistantTokens.size > 500)
+        abandonedAssistantTokens.delete(abandonedAssistantTokens.values().next().value);
+      handled.add(key);
+      autoDecision(reason + " (" + attempts + "/" + MAX_SEND_ATTEMPTS +
+        "); лимит исчерпан — ждём следующий ответ ИИ");
+    } else {
+      autoDecision(reason + " (" + attempts + "/" + MAX_SEND_ATTEMPTS + ")");
+    }
+  }
+
+  // We only undo a draft we ourselves inserted into an initially empty editor.
+  // Do not overwrite edits made by the user while waiting for the button.
+  function removeOurDraft(editor) {
+    if (editor && editorText(editor) === config.reply) fillEditor(editor, "");
   }
 
   function cooldownRemainingMs() {
@@ -524,15 +444,8 @@
   }
 
   function cancelPending() {
-    const old = pending;
+    if (pending) clearTimeout(pending.timer);
     pending = null;
-    if (!old) return;
-    if (old.timer) clearTimeout(old.timer);
-    if (old.armId)
-      chrome.runtime.sendMessage({ type: "CANCEL_ARM", armId: old.armId })
-        .catch(() => {});
-    // An outstanding ARM_SEND acknowledgement is canceled by its handler
-    // if this pending object has already been detached.
   }
 
   function editorText(editor) {
@@ -546,13 +459,15 @@
       const selection = getSelection();
       const range = document.createRange();
       range.selectNodeContents(editor);
-      range.collapse(false);
+      if (value) range.collapse(false);
       selection.removeAllRanges();
       selection.addRange(range);
       const inserted = document.execCommand("insertText", false, value);
-      if (!inserted) {
+      if (!inserted || (!value && editorText(editor))) {
         editor.textContent = value;
-        editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: value }));
+        editor.dispatchEvent(new InputEvent("input", {
+          bubbles: true, inputType: value ? "insertText" : "deleteContentBackward", data: value
+        }));
       }
     } else {
       const descriptor = Object.getOwnPropertyDescriptor(
@@ -564,19 +479,16 @@
     }
   }
 
-  async function sendIfReady(expectedKey, scheduled) {
-    if (!scheduled || pending !== scheduled || !scheduled.armId) return;
+  async function sendIfReady(expectedKey) {
     pending = null;
-    let claimSucceeded = false;
-    try {
     const expectedModeEpoch = modeEpoch;
-    autoDecision("Таймер ожидания истёк — проверяем отправку", "attempt");
-    if (sending || !config.enabled || config.mode !== "auto" ||
+    if (sending || !config.enabled || config.mode === "errors" ||
         !cooldownHydrated || cooldownRemainingMs() ||
         location.href !== route) {
       autoDecision("Отправка отменена: режим, блокировка или смена чата");
       return;
     }
+    autoDecision("Таймер ожидания истёк — проверяем отправку", "attempt");
     const selectors = currentSelectors();
     const result = latestAssistant(selectors.assistant);
     if (!result.node) {
@@ -591,6 +503,7 @@
       return;
     }
     if (result.ordinal <= lastClaimedAssistantOrdinal ||
+        abandonedAssistantTokens.has(assistantToken) ||
         submittedAssistantTokens.has(assistantToken) ||
         sendGuard.alreadySent(text, latestUserTurn().logicalTurn)) {
       autoDecision("Отправка отменена: ответ уже обработан");
@@ -601,14 +514,15 @@
       return;
     }
     if (hasStopButton(selectors.stop)) {
-      autoDecision("Отправка отменена: генерация ещё идёт (кнопка Stop)");
+      recordSendBlock(assistantToken, expectedKey,
+        "Отправка заблокирована кнопкой Stop");
       return;
     }
     if (config.completionSelector && !query(config.completionSelector).some(visible)) {
       autoDecision("Отправка отменена: нет элемента завершения");
       return;
     }
-    if (checkError()) {
+    if (config.mode !== "continue" && checkError()) {
       autoDecision("Отправка отменена: обнаружена ошибка");
       return;
     }
@@ -630,11 +544,12 @@
       return;
     }
     sending = true;
+    let shouldRestoreEmptyEditor = false;
     try {
       fillEditor(editor, config.reply);
-      for (let attempt = 0; attempt < 10; attempt++) {
+      for (let attempt = 0; attempt < MAX_SEND_ATTEMPTS; attempt++) {
         await new Promise(resolve => setTimeout(resolve, 200));
-        if (!config.enabled || config.mode !== "auto" ||
+        if (!config.enabled || config.mode === "errors" ||
             modeEpoch !== expectedModeEpoch || location.href !== route) {
           autoDecision("Отправка отменена: изменился режим или чат");
           return;
@@ -646,10 +561,12 @@
         // CRITICAL: recheck stop state on EVERY retry and immediately
         // before click. A Stop button must NEVER be mistaken for Send.
         if (hasStopButton(selectors.stop)) {
-          recordEvent("blocked", "Отправка отменена: появилась кнопка Stop");
+          recordSendBlock(assistantToken, expectedKey,
+            "Отправка заблокирована кнопкой Stop");
+          shouldRestoreEmptyEditor = true;
           return;
         }
-        if (checkError() || cooldownRemainingMs()) return;
+        if ((config.mode !== "continue" && checkError()) || cooldownRemainingMs()) return;
         const current = latestAssistant(selectors.assistant);
         if (!current.node || messageKey(current.node, current.count, textOf(current.node)) !== expectedKey ||
             !followsUser(current.node, latestUserTurn().node) ||
@@ -658,8 +575,13 @@
           return;
         }
         const button = findSendButton(selectors.send);
-        if (!button) continue;
-        if (!config.enabled || config.mode !== "auto" || modeEpoch !== expectedModeEpoch ||
+        if (!button) {
+          recordSendBlock(assistantToken, expectedKey,
+            "Кнопка отправки недоступна");
+          if (abandonedAssistantTokens.has(assistantToken)) shouldRestoreEmptyEditor = true;
+          continue;
+        }
+        if (!config.enabled || config.mode === "errors" || modeEpoch !== expectedModeEpoch ||
             Core.isStopAction(button) || hasStopButton(selectors.stop)) return;
         const userTurn = latestUserTurn().logicalTurn;
         if (sendGuard.alreadySent(text, userTurn)) return;
@@ -672,8 +594,7 @@
         let claim;
         try {
           claim = await chrome.runtime.sendMessage({
-            type: "CLAIM_SEND", token, assistantOrdinal: current.ordinal,
-            armId: scheduled.armId
+            type: "CLAIM_SEND", token, assistantOrdinal: current.ordinal
           });
         } catch (error) {
           recordEvent("blocked", "Отправка отменена: нет подтверждения защиты от дублей");
@@ -687,7 +608,6 @@
             "Повторная отправка заблокирована");
           return;
         }
-        claimSucceeded = true;
         globalLockedUntil = Math.max(globalLockedUntil,
           Number.isFinite(claim.lockedUntil) ? claim.lockedUntil :
           Date.now() + config.cooldownSeconds * 1000);
@@ -699,7 +619,7 @@
         // Claim may take time: conditions can change during the await.
         // A claim is intentionally never rolled back, even if UI changed;
         // preventing duplicate Sends is more important than retrying blindly.
-        if (!config.enabled || config.mode !== "auto" || modeEpoch !== expectedModeEpoch ||
+        if (!config.enabled || config.mode === "errors" || modeEpoch !== expectedModeEpoch ||
             location.href !== route || hasStopButton(selectors.stop) ||
             editorText(editor) !== config.reply) return;
         const verified = latestAssistant(selectors.assistant);
@@ -710,54 +630,43 @@
         const finalButton = findSendButton(selectors.send);
         if (!finalButton || Core.isStopAction(finalButton) ||
             hasStopButton(selectors.stop) || !config.enabled ||
-            config.mode !== "auto" || modeEpoch !== expectedModeEpoch) return;
+            config.mode === "errors" || modeEpoch !== expectedModeEpoch) return;
         sendGuard.record(text, userTurn);
         lastUserTurnAtSend = userTurn;
         handled.add(expectedKey);
         lastClickAt = Date.now();
         sendClicks++;
         finalButton.click();
-        // Separately record the actual click call in the shared background
-        // audit. This identifies the originating tab even when the popup
-        // inspects a different chat later.
-        chrome.runtime.sendMessage({
-          type: "WATCHDOG_SEND_CLICKED", assistantOrdinal: current.ordinal
-        }).catch(() => {});
         autoDecision("Отправлено одно сообщение автопродолжения", "sent");
         recordEvent("sent", "Отправлено: " + config.reply);
         return;
       }
-      recordEvent("blocked", "Кнопка отправки недоступна; текст оставлен в поле");
-      console.warn("Chat Watchdog: send button unavailable; follow-up left in editor.");
     } finally {
+      // If the user changes mode while Send is unavailable, do not leave
+      // our unsubmitted follow-up in the composer in the new mode.
+      if (shouldRestoreEmptyEditor || modeEpoch !== expectedModeEpoch)
+        removeOurDraft(editor);
       sending = false;
-    }
-    } finally {
-      if (!claimSucceeded && scheduled.armId)
-        chrome.runtime.sendMessage({
-          type: "CANCEL_ARM", armId: scheduled.armId
-        }).catch(() => {});
     }
   }
 
   function check() {
     if (!config.enabled) return;
     if (route !== location.href) {
-      lastObservedUserTurn = null;
-      lastComposerInteraction = null;
       closeDialog();
       errorTracker.reset();
       acknowledgedAssistantAlerts.clear();
       route = location.href;
       lastClaimedAssistantOrdinal = 0;
+      failedSendAttempts.clear();
+      abandonedAssistantTokens.clear();
       hydrateCooldown();
       seenInitial = false;
       lastKey = "";
       handled = new Set();
       cancelPending();
     }
-    observeUserTurn();
-    if (checkError()) {
+    if (config.mode !== "continue" && checkError()) {
       cancelPending();
       return;
     }
@@ -796,14 +705,16 @@
       if (Core.completionMatches(text, config.marker, config.markerRegex)) handled.add(key);
       return;
     }
+    const assistantToken = sendToken(result.node, text, result.count);
     if (handled.has(key) || sending ||
       result.ordinal <= lastClaimedAssistantOrdinal ||
-      submittedAssistantTokens.has(sendToken(result.node, text, result.count)) ||
+      abandonedAssistantTokens.has(assistantToken) ||
+      submittedAssistantTokens.has(assistantToken) ||
       !Core.completionMatches(text, config.marker, config.markerRegex) ||
       sendGuard.alreadySent(text, latestUserTurn().logicalTurn)) return;
     if (Date.now() - stableSince < (config.marker ? 1500 : 4500)) return;
     if (hasStopButton(selectors.stop)) {
-      recordEvent("blocked", "Ожидание: видна кнопка Stop");
+      recordSendBlock(assistantToken, key, "Отправка заблокирована кнопкой Stop");
       return;
     }
     if (cooldownRemainingMs()) {
@@ -814,44 +725,15 @@
     if (config.completionSelector && !query(config.completionSelector).some(visible)) return;
     if (pending && pending.key === key) return;
     cancelPending();
-    const scheduled = {
-      key, armId: null, dueAt: null, timer: null
+    pending = {
+      key,
+      dueAt: Date.now() + config.delaySeconds * 1000,
+      timer: setTimeout(() => { sendIfReady(key).catch(console.warn); },
+        config.delaySeconds * 1000)
     };
-    pending = scheduled;
-    const token = sendToken(result.node, text, result.count);
-    chrome.runtime.sendMessage({
-      type: "ARM_SEND", token, assistantOrdinal: result.ordinal
-    }).then(arm => {
-      if (pending !== scheduled) {
-        if (arm?.ok && arm.armId)
-          chrome.runtime.sendMessage({
-            type: "CANCEL_ARM", armId: arm.armId
-          }).catch(() => {});
-        return;
-      }
-      if (!arm?.ok || !arm.armId || !Number.isFinite(arm.dueAt)) {
-        pending = null;
-        handled.add(key);
-        autoDecision("Ожидание заблокировано фоновым процессом: " +
-          (arm?.reason || "нет подтверждения"));
-        return;
-      }
-      scheduled.armId = arm.armId;
-      scheduled.dueAt = arm.dueAt;
-      scheduled.timer = setTimeout(() => {
-        sendIfReady(key, scheduled).catch(console.warn);
-      }, Math.max(0, arm.dueAt - Date.now()));
-      recordEvent("detected", config.marker ? "Найден маркер: " + config.marker +
-        " — отправка через " + Math.ceil(Math.max(0, arm.dueAt - Date.now()) / 1000) + " с" :
-        "Ответ завершён — отправка через " +
-        Math.ceil(Math.max(0, arm.dueAt - Date.now()) / 1000) + " с");
-    }).catch(() => {
-      if (pending === scheduled) {
-        pending = null;
-        handled.add(key);
-        autoDecision("Ожидание заблокировано: фоновый процесс недоступен");
-      }
-    });
+    recordEvent("detected", config.marker ? "Найден маркер: " + config.marker +
+      " — отправка через " + config.delaySeconds + " с" :
+      "Ответ завершён — отправка через " + config.delaySeconds + " с");
   }
 
   function scheduleCheck() {
@@ -886,6 +768,12 @@
       logicalUserTurnDetected: !!latestUserTurn().logicalTurn,
       sendClicks,
       rememberedAssistantReplies: submittedAssistantTokens.size,
+      blockedAssistantReplies: abandonedAssistantTokens.size,
+      currentReplySendAttempts: (() => {
+        const current = latestAssistant(selectors.assistant);
+        return current.node ? (failedSendAttempts.get(
+          sendToken(current.node, textOf(current.node), current.count)) || 0) : 0;
+      })(),
       assistantOrdinal: latestAssistant(selectors.assistant).ordinal,
       lastClaimedAssistantOrdinal,
       cooldownRemainingSeconds: Math.ceil(cooldownRemainingMs() / 1000),
@@ -921,15 +809,17 @@
     if (!message || message.type !== "WATCHDOG_CONFIG") return false;
     const wasEnabled = config.enabled;
     const previousMode = config.mode;
+    receivedLiveConfig = true;
     config = Core.normalize(message.config);
     if (previousMode !== config.mode) {
       modeEpoch++;
       cancelPending();
       if (config.enabled) recordEvent("mode", config.mode === "errors" ?
         "Режим: только ошибки — автоотправка отключена" :
-        "Режим: автопродолжение и ошибки");
+        config.mode === "continue" ? "Режим: только автопродление" :
+        "Режим: автопродление и ошибки");
       // Returning to auto mode must not replay an already completed reply.
-      if (config.mode === "auto") {
+      if (config.mode !== "errors") {
         hydrateCooldown();
         seenInitial = false;
         lastKey = "";
@@ -937,8 +827,6 @@
       }
     }
     if (!config.enabled) {
-      lastObservedUserTurn = null;
-      lastComposerInteraction = null;
       cooldownHydrated = false;
       hydrationEpoch++;
       cancelPending();
@@ -956,6 +844,9 @@
   });
 
   chrome.runtime.sendMessage({ type: "GET_CONFIG" }).then((saved) => {
+    // A popup change received while the initial request was in flight wins.
+    // Otherwise an older snapshot can silently switch errors-only back to auto.
+    if (receivedLiveConfig) return;
     config = Core.normalize(saved);
     if (config.enabled) hydrateCooldown();
     check();

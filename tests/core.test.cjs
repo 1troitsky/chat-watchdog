@@ -66,8 +66,6 @@ test("invalid patterns are ignored and plain text remains compatible", () => {
 test("detects Russian and English error phrases", () => {
   const words = Core.DEFAULTS.errorWords;
   assert.equal(Core.findError("Ошибка соединения. Повторите", words), "Ошибка соединения");
-  assert.equal(Core.findError("Ошибка в потоке сообщений", words), "Ошибка в потоке сообщений");
-  assert.equal(Core.findErrorLine("Ошибка в потоке сообщений", words), "Ошибка в потоке сообщений");
   assert.equal(Core.findError("NETWORK ERROR: retry", words), "Network error");
   assert.equal(Core.findError("No issue", words), null);
 });
@@ -210,22 +208,10 @@ test("upgrading previous session settings adds new alert markers once", () => {
   });
   assert.match(old.errorWords, /!!!ЕСТЬ ЗАДАНИЕ ДЛЯ АГЕНТА!!!/);
   assert.match(old.errorWords, /!!НУЖНА ЛОКАЛЬНАЯ ПРОВЕРКА!!!/);
-  assert.ok(old.errorWords.includes("Ошибка в потоке сообщений"));
   const next = Core.normalize(old);
   assert.equal(next.errorWords, old.errorWords);
   const edited = Core.normalize({ ...next, errorWords: "Моя новая ошибка" });
   assert.equal(edited.errorWords, "Моя новая ошибка");
-});
-
-test("v1 error phrases migrate to v2 once without overwriting edited settings", () => {
-  const old = { errorWords: "Ошибка соединения\nМоя ошибка", errorWordsVersion: 1 };
-  const migrated = Core.normalize(old);
-  assert.equal(migrated.errorWordsVersion, 2);
-  assert.equal(migrated.errorWords, "Ошибка соединения\nМоя ошибка\nОшибка в потоке сообщений");
-  const again = Core.normalize(migrated);
-  assert.equal(again.errorWords, migrated.errorWords);
-  const custom = Core.normalize({ ...again, errorWords: "Только моя ошибка" });
-  assert.equal(custom.errorWords, "Только моя ошибка");
 });
 
 test("sensitive Stop controls are never treated as Send buttons", () => {
@@ -241,4 +227,13 @@ test("uses different selectors for different assistants", () => {
   assert.match(Core.selectorsFor("chatgpt.com").editor, /pending-conversation-input/);
   assert.match(Core.selectorsFor("chatgpt.com").send, /aria-label="Отправить"/);
   assert.match(Core.selectorsFor("claude.ai").assistant, /claude-message/);
+});
+
+
+test("three modes round-trip; obsolete values safely default to combined", () => {
+  for (const mode of ["auto", "continue", "errors"]) {
+    assert.equal(Core.normalize({ mode }).mode, mode);
+    assert.equal(Core.normalize(Core.normalize({ mode })).mode, mode);
+  }
+  assert.equal(Core.normalize({ mode: "unexpected" }).mode, "auto");
 });

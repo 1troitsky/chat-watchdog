@@ -11,8 +11,8 @@
     delaySecondsVersion: 2,
     cooldownSeconds: 45,
     toastEnabled: true,
-    errorWordsVersion: 2,
-    errorWords: "Соединение прервано\nОшибка соединения\nОшибка в потоке сообщений\nНет ответа от ChatGPT. Проверьте подключение к интернету\nВы достигли лимита\nВы достигни лимита\nConnection interrupted\nNetwork error\nRate limit reached\n!!!ЕСТЬ ЗАДАНИЕ ДЛЯ АГЕНТА!!!\n!!!ЖДУ РЕШЕНИЕ!!!\n!!!У НАС ПРОБЛЕМА!!!\n!!НУЖНА ЛОКАЛЬНАЯ ПРОВЕРКА!!!",
+    errorWordsVersion: 1,
+    errorWords: "Соединение прервано\nОшибка соединения\nНет ответа от ChatGPT. Проверьте подключение к интернету\nВы достигли лимита\nВы достигни лимита\nConnection interrupted\nNetwork error\nRate limit reached\n!!!ЕСТЬ ЗАДАНИЕ ДЛЯ АГЕНТА!!!\n!!!ЖДУ РЕШЕНИЕ!!!\n!!!У НАС ПРОБЛЕМА!!!\n!!НУЖНА ЛОКАЛЬНАЯ ПРОВЕРКА!!!",
     assistantSelector: "",
     editorSelector: "",
     sendSelector: "",
@@ -30,9 +30,6 @@
     "!!!У НАС ПРОБЛЕМА!!!",
     "!!НУЖНА ЛОКАЛЬНАЯ ПРОВЕРКА!!!"
   ]);
-  const ERROR_PHRASES_V2 = Object.freeze([
-    "Ошибка в потоке сообщений"
-  ]);
 
   function normalize(value) {
     const input = value && typeof value === "object" ? value : {};
@@ -43,7 +40,7 @@
       }
     }
     config.enabled = config.enabled === true;
-    config.mode = config.mode === "errors" ? "errors" : "auto";
+    config.mode = ["auto", "continue", "errors"].includes(config.mode) ? config.mode : "auto";
     config.markerRegex = config.markerRegex === true;
     config.toastEnabled = config.toastEnabled !== false;
     config.delaySeconds = Math.max(1, Math.min(600, Number(config.delaySeconds) || 30));
@@ -67,14 +64,7 @@
         if (!present.includes(phrase)) config.errorWords += "\n" + phrase;
       }
     }
-    if (typeof input.errorWords === "string" &&
-        Number(input.errorWordsVersion || 0) < 2) {
-      const present = config.errorWords.split(/\r?\n/).map(s => s.trim());
-      for (const phrase of ERROR_PHRASES_V2) {
-        if (!present.includes(phrase)) config.errorWords += "\n" + phrase;
-      }
-    }
-    config.errorWordsVersion = 2;
+    config.errorWordsVersion = 1;
     config.marker = config.marker.trim();
     config.reply = config.reply.trim() || DEFAULTS.reply;
     return config;

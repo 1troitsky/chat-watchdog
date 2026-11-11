@@ -7,11 +7,10 @@ const vm = require("node:vm");
 const coreSource = fs.readFileSync(path.join(__dirname, "..", "core.js"), "utf8");
 const contentSource = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
 
-function createChat({ duplicateInstances = false } = {}) {
+function createChat() {
   const phrase = "!!!У НАС ПРОБЛЕМА!!!";
   let now = 10000, nextTimer = 0;
   let poll, inspectMutations, keydown;
-  const pollers = [];
   let statusVisible = false;
   let assistant = null;
   let users = [];
@@ -58,18 +57,11 @@ function createChat({ duplicateInstances = false } = {}) {
     querySelectorAll() { return []; }
   };
 
-  const rootAttributes = {};
   const document = {
-    documentElement: {
-      getAttribute(name) { return rootAttributes[name] || null; },
-      setAttribute(name, value) { rootAttributes[name] = value; }
-    },
+    documentElement: {},
     body,
     querySelector: () => null,
     querySelectorAll(selector) {
-      if (selector === "#chat-watchdog-alert-host") {
-        return ui.filter(n => n.id === "chat-watchdog-alert-host");
-      }
       if (selector === "[data-chat-watchdog-toast]") {
         return ui.filter(n => n.getAttribute("data-chat-watchdog-toast") !== null);
       }
@@ -93,7 +85,7 @@ function createChat({ duplicateInstances = false } = {}) {
       return id;
     },
     clearTimeout(id) { jobs.delete(id); },
-    setInterval(fn) { if (!poll) poll = fn; pollers.push(fn); },
+    setInterval(fn) { poll = fn; },
     MutationObserver: class {
       constructor(fn) { inspectMutations = fn; }
       observe() {}
@@ -116,19 +108,10 @@ function createChat({ duplicateInstances = false } = {}) {
   vm.createContext(context);
   vm.runInContext(coreSource, context);
   vm.runInContext(contentSource, context);
-  if (duplicateInstances) {
-    // Inject the same code in an independent V8 world (as can happen when
-    // extension updates overlap) while using the SAME page DOM.
-    const second = Object.assign({}, context);
-    delete second.globalThis;
-    vm.createContext(second);
-    vm.runInContext(coreSource, second);
-    vm.runInContext(contentSource, second);
-  }
 
   async function start() {
     for (let i = 0; i < 10; i++) await Promise.resolve();
-    for (const p of pollers) p();
+    poll();
   }
   function flushMutations() {
     for (let i = 0; i < 10 && mutations.length; i++) {
@@ -152,9 +135,7 @@ function createChat({ duplicateInstances = false } = {}) {
     keydown({ key: "Escape", preventDefault() {}, stopPropagation() {} });
   }
   return {
-    start, poll, pollAll() { for (const p of pollers) p(); },
-    overlayCount() { return ui.filter(n => n.id === "chat-watchdog-alert-host").length; },
-    close, advance, flushMutations,
+    start, poll, close, advance, flushMutations,
     showStatus(value) { statusVisible = value; },
     changeStatus(value) { status.innerText = value; status.textContent = value; },
     setAssistant(value) { assistant = node(value); assistant.closest = () => null; },
@@ -217,22 +198,4 @@ test("repainting an identical assistant error does not re-open its dialog", asyn
   app.setAssistant("!!!У НАС ПРОБЛЕМА!!!");
   app.poll();
   assert.equal(app.count("PLAY_ERROR"), 2, "another user turn is a new error");
-});
-
-
-test("two independent content-script worlds share a SINGLE blocking alert overlay", async () => {
-  const app = createChat({ duplicateInstances: true });
-  await app.start();
-  app.newUser("Проверка");
-  app.setAssistant("!!!У НАС ПРОБЛЕМА!!!");
-  app.pollAll();
-  assert.equal(app.overlayCount(), 1, "only one modal may exist in the DOM");
-  assert.equal(app.count("PLAY_ERROR"), 1, "one sound per alert, not one per world");
-  app.close();
-  assert.equal(app.overlayCount(), 0, "one close clears the entire screen");
-  app.pollAll();
-  await app.advance(5000);
-  app.pollAll();
-  assert.equal(app.overlayCount(), 0, "dismissed error must not re-open");
-  assert.equal(app.count("PLAY_ERROR"), 1);
 });

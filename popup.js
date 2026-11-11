@@ -126,33 +126,10 @@
             new URL(item.url).pathname === new URL(tab.url).pathname;
         } catch { return false; }
       });
-      const siteTabs = allTabs.filter(item => {
-        try { return !!item.url && new URL(item.url).origin === origin; }
-        catch { return false; }
-      });
-      const extraKeys = siteTabs.map(item => "tab:" + item.id);
-      const auditKey = "watchdog:send-audit";
-      const allData = await chrome.storage.session.get([...extraKeys, auditKey]);
-      const audit = Array.isArray(allData[auditKey]) ? allData[auditKey] : [];
-      const sourceRows = siteTabs.map(item => {
-        const state = allData["tab:" + item.id];
-        const mode = !state || !state.enabled ? "OFF" :
-          state.mode === "errors" ? "Только ошибки" : "Автопродолжение";
-        const suffix = (() => {
-          try { return new URL(item.url).pathname.slice(-6); }
-          catch { return ""; }
-        })();
-        return "Вкладка #" + item.id + " [" + suffix + "]: " + mode;
-      });
-      const auditRows = audit.slice(-25).map(item =>
-        new Date(item.at).toLocaleTimeString("ru-RU") +
-        " вкладка #" + item.tabId + " [" + (item.conversationHint || "") +
-        "] " + item.event + " (" + item.outcome + ")" +
-        " режим=" + item.mode +
-        (item.ordinal == null ? "" : " ответ=" + item.ordinal));
       const diagnostic = [
         "Монитор: " + (result.enabled ? "ON" : "OFF"),
-        "Режим: " + (result.mode === "errors" ? "Только ошибки" : "Автопродолжение + ошибки"),
+        "Режим: " + (result.mode === "errors" ? "Только ошибки" :
+          result.mode === "continue" ? "Только автопродление" : "Автопродление + ошибки"),
         "Сообщений ИИ: " + result.assistantCount,
         "Режим поиска: " + result.assistantDetection,
         "Старые роли: " + result.legacyAssistantCount,
@@ -166,6 +143,8 @@
         "Ход пользователя распознан: " + (result.logicalUserTurnDetected ? "да" : "нет"),
         "Маркер уже отправлен: " + (result.markerAlreadySent ? "ДА" : "НЕТ"),
         "Нажатий Отправить монитором: " + result.sendClicks,
+        "Неудачных попыток для ответа: " + (result.currentReplySendAttempts || 0) + "/5",
+        "Ответов пропущено после 5 попыток: " + (result.blockedAssistantReplies || 0),
         "Запомнено ответов ИИ: " + result.rememberedAssistantReplies,
         "Номер текущего ответа: " + result.assistantOrdinal,
         "Последний ответ обработчика: " + result.lastClaimedAssistantOrdinal,
@@ -187,13 +166,7 @@
         "Отправка назначена: " + (result.scheduledSendAt ?
           new Date(result.scheduledSendAt).toLocaleTimeString("ru-RU") : "нет"),
         "Последняя попытка: " + (result.lastAutoDecisionAt || "нет"),
-        "Причина/результат: " + result.lastAutoDecision,
-        "",
-        "=== Режимы всех вкладок этого сайта ===",
-        ...(sourceRows.length ? sourceRows : ["Нет вкладок"]),
-        "",
-        "=== Общий журнал попыток Watchdog ===",
-        ...(auditRows.length ? auditRows : ["Записей пока нет (журнал ведётся с v0.2.11)"])
+        "Причина/результат: " + result.lastAutoDecision
       ].join("\n");
       output.textContent = diagnostic;
       return diagnostic;

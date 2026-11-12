@@ -13,8 +13,8 @@
     cooldownSecondsVersion: 2,
     toastEnabled: true,
     missingMarkerError: false, // opt-in: incomplete stable answer is an alert
-    errorWordsVersion: 2,
-    errorWords: "Соединение прервано\nОшибка соединения\nНет ответа от ChatGPT. Проверьте подключение к интернету\nВы достигли лимита\nВы достигни лимита\nConnection interrupted\nNetwork error\nRate limit reached\nВремя ожидания доставки сообщения истекло. Попробуйте снова\nВы достигли максимальной длины этого обсуждения\nFailed to fetch\nОшибка в потоке сообщений\n!!!ЕСТЬ ЗАДАНИЕ ДЛЯ АГЕНТА!!!\n!!!ЖДУ РЕШЕНИЕ!!!\n!!!У НАС ПРОБЛЕМА!!!\n!!НУЖНА ЛОКАЛЬНАЯ ПРОВЕРКА!!!",
+    errorWordsVersion: 3,
+    errorWords: "Соединение прервано\nОшибка соединения\nНет ответа от ChatGPT. Проверьте подключение к интернету\nВы достигли лимита\nВы достигни лимита\nConnection interrupted\nNetwork error\nRate limit reached\nВремя ожидания доставки сообщения истекло. Попробуйте снова\nВы достигли максимальной длины этого обсуждения\nFailed to fetch\nОшибка в потоке сообщений\nUnknown error\nНеизвестная ошибка\n!!!ЕСТЬ ЗАДАНИЕ ДЛЯ АГЕНТА!!!\n!!!ЖДУ РЕШЕНИЕ!!!\n!!!У НАС ПРОБЛЕМА!!!\n!!НУЖНА ЛОКАЛЬНАЯ ПРОВЕРКА!!!",
     assistantSelector: "",
     editorSelector: "",
     sendSelector: "",
@@ -35,7 +35,9 @@
     "Время ожидания доставки сообщения истекло. Попробуйте снова",
     "Вы достигли максимальной длины этого обсуждения",
     "Failed to fetch",
-    "Ошибка в потоке сообщений"
+    "Ошибка в потоке сообщений",
+    "Unknown error",
+    "Неизвестная ошибка"
   ]);
 
   // These are recognized in standalone system UI messages, not searched
@@ -44,7 +46,9 @@
     "Время ожидания доставки сообщения истекло",
     "Вы достигли максимальной длины этого обсуждения",
     "Failed to fetch",
-    "Ошибка в потоке сообщений"
+    "Ошибка в потоке сообщений",
+    "Unknown error",
+    "Неизвестная ошибка"
   ]);
 
   function normalize(value) {
@@ -80,13 +84,13 @@
     }
     // Upgrade existing tab settings once, without preventing later edits.
     // The new defaults would otherwise be hidden by saved errorWords strings.
-    if (typeof input.errorWords === "string" && Number(input.errorWordsVersion || 0) < 2) {
+    if (typeof input.errorWords === "string" && Number(input.errorWordsVersion || 0) < 3) {
       const present = config.errorWords.split(/\r?\n/).map(s => s.trim());
       for (const phrase of NEW_ERROR_PHRASES) {
         if (!present.includes(phrase)) config.errorWords += "\n" + phrase;
       }
     }
-    config.errorWordsVersion = 2;
+    config.errorWordsVersion = 3;
     config.marker = config.marker.trim();
     config.reply = config.reply.trim() || DEFAULTS.reply;
     return config;
@@ -162,7 +166,9 @@
       const actual = line.toLocaleLowerCase();
       return actual === needle || actual.replace(/[.!?。]+$/, "") === needle ||
         (index < 2 && (actual.startsWith(needle + ".") ||
-          actual.startsWith(needle + ",") || actual.startsWith(needle + " ")));
+          actual.startsWith(needle + ",") || actual.startsWith(needle + " "))) ||
+        ((phrase === "Unknown error" || phrase === "Неизвестная ошибка") &&
+          actual.startsWith(needle + ":"));
     }) || null;
   }
 

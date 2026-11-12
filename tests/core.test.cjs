@@ -250,12 +250,13 @@ test('known transport failures are upgraded into previously saved error-word set
   for (const phrase of [
     'Время ожидания доставки сообщения истекло. Попробуйте снова',
     'Вы достигли максимальной длины этого обсуждения',
-    'Failed to fetch', 'Ошибка в потоке сообщений'
+    'Failed to fetch', 'Ошибка в потоке сообщений',
+    'Unknown error', 'Неизвестная ошибка'
   ]) {
     assert.ok(upgraded.errorWords.includes(phrase), `missing: ${phrase}`);
   }
   assert.ok(upgraded.errorWords.includes('Пользовательская ошибка'));
-  assert.equal(upgraded.errorWordsVersion, 2);
+  assert.equal(upgraded.errorWordsVersion, 3);
   assert.equal(Core.normalize(upgraded).errorWords, upgraded.errorWords, 'no duplicates on repeated normalization');
 });
 
@@ -269,6 +270,21 @@ test('transport error lines are detected, while ordinary quoted mentions remain 
     'Время ожидания доставки сообщения истекло');
   assert.equal(Core.findErrorLine('Сообщение цитирует Failed to fetch внутри предложения', phrases), null);
   assert.equal(Core.findSystemErrorLine('Объясни фразу Failed to fetch', phrases), null);
+  assert.equal(Core.findErrorLine('Unknown error', phrases), 'Unknown error');
+  assert.equal(Core.findErrorLine('Неизвестная ошибка', phrases), 'Неизвестная ошибка');
+  assert.equal(Core.findSystemErrorLine('Unknown error: request failed', phrases), 'Unknown error');
+  assert.equal(Core.findSystemErrorLine('Неизвестная ошибка: повторите попытку', phrases), 'Неизвестная ошибка');
+  assert.equal(Core.findSystemErrorLine('User reported Unknown error in a code sample', phrases), null);
+});
+
+test('upgrading v2 customized errors adds both unknown-error phrases exactly once', () => {
+  const saved = { errorWordsVersion: 2, errorWords: 'Моя собственная ошибка\nFailed to fetch' };
+  const upgraded = Core.normalize(saved);
+  assert.equal(upgraded.errorWordsVersion, 3);
+  assert.equal(upgraded.errorWords.split('Unknown error').length - 1, 1);
+  assert.equal(upgraded.errorWords.split('Неизвестная ошибка').length - 1, 1);
+  assert.ok(upgraded.errorWords.includes('Моя собственная ошибка'));
+  assert.equal(Core.normalize(upgraded).errorWords, upgraded.errorWords);
 });
 
 test('missing-marker alert is strictly opt-in, marker matches start or end', () => {

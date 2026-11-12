@@ -176,14 +176,18 @@ async function playTabAudio(tabId, sender, kind = "error") {
   // Bundled sounds are always available; a user-selected file simply overrides
   // the corresponding channel. Do not require custom audio names in settings.
   if (!config || !config.enabled ||
-      (kind === "error" && config.mode === "continue")) return;
-  if (!sender.tab?.url || new URL(sender.tab.url).origin !== config.origin) return;
+      (kind === "error" && config.mode === "continue"))
+    return { ok: false, reason: "inactive-or-error-sounds-disabled" };
+  if (!sender.tab?.url || new URL(sender.tab.url).origin !== config.origin)
+    return { ok: false, reason: "invalid-origin" };
   await ensureOffscreen();
-  if (audioEpochs.get(tabId + ":" + kind) !== epoch) return;
+  if (audioEpochs.get(tabId + ":" + kind) !== epoch)
+    return { ok: false, cancelled: true };
   const result = await chrome.runtime.sendMessage({ type: "OFFSCREEN_PLAY", tabId, kind });
   if (!result?.ok && !result?.cancelled) {
     console.warn("Chat Watchdog audio:", result?.error || "playback failed");
   }
+  return result || { ok: false, reason: "no-audio-response" };
 }
 
 // Serialize completion claims so two observers or a worker restart cannot
@@ -326,8 +330,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   if (message.type === "PLAY_ERROR") {
-    playTabAudio(tabId, sender).catch(console.warn);
-    return false;
+    playTabAudio(tabId, sender).then(sendResponse).catch(error => {
+      console.warn("Chat Watchdog audio:", error);
+      sendResponse({ ok: false, error: String(error) });
+    });
+    return true;
   }
   if (message.type === "STOP_ERROR") {
     stopTabAudio(tabId, "error").catch(console.warn);

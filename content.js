@@ -19,27 +19,56 @@
   let lastClaimedAssistantOrdinal = 0;
   let dialogRoot = null;
   let dialogError = null;
-  // Dismiss one visible error incident only once, even if ChatGPT shows the
-  // same failure in a toast, assistant turn and status element. A different
-  // error phrase or a new turn remains eligible to trigger another alert.
-  const dismissedErrorIncidents = new Map();
+  // An error can temporarily disappear during ChatGPT DOM reconciliation.
+  // Acknowledgement is per user turn and phrase, NOT a 2.5-second timeout:
+  // otherwise one error can reopen repeatedly after a single dismissal.
+  const dismissedErrorIncidents = new Set();
   let visibleErrorIncidents = new Set();
-  const ERROR_ABSENCE_RESET_MS = 2500;
+  let activeDialogIncidentKey = null;
+  // These small hashed acknowledgements live in the shared DOM, so multiple
+  // injected observers of this extension cannot undo each other's dismissals.
+  const ERROR_ACK_ATTR = "data-chat-watchdog-error-acks";
 
   function errorIncidentKey(phrase) {
     const userTurn = latestUserTurn().logicalTurn || "no-user-turn";
     return route + "|" + userTurn + "|" + String(phrase).toLocaleLowerCase().trim();
   }
 
+  function incidentHash(key) {
+    let hash = 2166136261;
+    for (let i = 0; i < key.length; i++) {
+      hash ^= key.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(16);
+  }
+
+  function acknowledgedInPage(key) {
+    const element = document.documentElement;
+    if (!element || typeof element.getAttribute !== "function") return false;
+    return (element.getAttribute(ERROR_ACK_ATTR) || "").split(",")
+      .includes(incidentHash(key));
+  }
+
+  function acknowledgeError(key) {
+    dismissedErrorIncidents.add(key);
+    if (dismissedErrorIncidents.size > 256)
+      dismissedErrorIncidents.delete(dismissedErrorIncidents.values().next().value);
+    const element = document.documentElement;
+    if (!element || typeof element.setAttribute !== "function" ||
+        typeof element.getAttribute !== "function") return;
+    const previous = (element.getAttribute(ERROR_ACK_ATTR) || "").split(",").filter(Boolean);
+    const hash = incidentHash(key);
+    if (!previous.includes(hash)) previous.push(hash);
+    element.setAttribute(ERROR_ACK_ATTR, previous.slice(-256).join(","));
+  }
+
   function trackErrorIncidents(activeKeys) {
     visibleErrorIncidents = activeKeys;
-    const now = Date.now();
-    for (const [key, absentSince] of dismissedErrorIncidents) {
-      if (activeKeys.has(key)) dismissedErrorIncidents.set(key, null);
-      else if (absentSince === null) dismissedErrorIncidents.set(key, now);
-      else if (now - absentSince >= ERROR_ABSENCE_RESET_MS)
-        dismissedErrorIncidents.delete(key);
-    }
+  }
+
+  function isErrorAcknowledged(key) {
+    return dismissedErrorIncidents.has(key) || acknowledgedInPage(key);
   }
   let sendClicks = 0;
   let lastClickAt = 0;
@@ -326,7 +355,7 @@
     recordEvent("error", message);
     if (dialogRoot) dialogError.textContent = message;
     else if (showDialog(message)) {
-      chrome.runtime.sendMessage({ type: "PLAY_ERROR" }).catch(() => {});
+      playErrorSound();
     }
   }
 
@@ -390,13 +419,24 @@
       .some(button => visible(button) && Core.isStopAction(button));
   }
 
+  function playErrorSound() {
+    // Unlike the completion channel, an audio failure needs to be visible in
+    // the per-tab diagnostic log rather than disappearing in the service worker.
+    chrome.runtime.sendMessage({ type: "PLAY_ERROR" }).then(result => {
+      if (result && result.ok === false && !result.cancelled)
+        recordEvent("error", "Звук ошибки не воспроизведён: " +
+          (result.error || result.reason || "неизвестная причина"));
+    }).catch(error => recordEvent("error", "Ошибка запуска звука: " + String(error)));
+  }
+
   function closeDialog() {
     if (dialogRoot) {
-      for (const key of visibleErrorIncidents)
-        dismissedErrorIncidents.set(key, null);
+      for (const key of visibleErrorIncidents) acknowledgeError(key);
+      if (activeDialogIncidentKey) acknowledgeError(activeDialogIncidentKey);
       dialogRoot.remove();
       dialogRoot = null;
       dialogError = null;
+      activeDialogIncidentKey = null;
       // Older injected scripts or duplicate installations may have created
       // additional overlays. One user dismissal removes all of them.
       for (const duplicate of query("#chat-watchdog-alert-host")) duplicate.remove();
@@ -413,7 +453,8 @@
     }
   }
 
-  function showDialog(message) {
+  function showDialog(message, incidentKey = errorIncidentKey(message)) {
+    if (isErrorAcknowledged(incidentKey)) return false;
     if (dialogRoot) {
       if (query("#chat-watchdog-alert-host").includes(dialogRoot)) {
         dialogError.textContent = message;
@@ -468,6 +509,7 @@
     dialogError.textContent = "Обнаружена ошибка: " + message;
     shadow.querySelector(".close").addEventListener("click", closeDialog);
     dialogRoot = host;
+    activeDialogIncidentKey = incidentKey;
     (document.body || document.documentElement).appendChild(host);
     document.addEventListener("keydown", handleDialogKeydown, true);
     shadow.querySelector(".close").focus();
@@ -553,12 +595,12 @@
     }
     trackErrorIncidents(new Set(matches.map((entry) => errorIncidentKey(entry.phrase))));
     const fresh = errorTracker.observe(matches);
-    if (fresh && !dismissedErrorIncidents.has(errorIncidentKey(fresh.phrase))) {
+    if (fresh && !isErrorAcknowledged(errorIncidentKey(fresh.phrase))) {
       recordEvent("error", "Ошибка: " + fresh.phrase);
       if (dialogRoot) {
         dialogError.textContent = "Обнаружена ошибка: " + fresh.phrase;
       } else if (showDialog(fresh.phrase)) {
-        chrome.runtime.sendMessage({ type: "PLAY_ERROR" }).catch(() => {});
+        playErrorSound();
       }
     }
     return assistantErrorActive || matches.length > 0;

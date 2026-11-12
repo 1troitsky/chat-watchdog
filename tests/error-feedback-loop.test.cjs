@@ -7,7 +7,7 @@ const vm = require("node:vm");
 const coreSource = fs.readFileSync(path.join(__dirname, "..", "core.js"), "utf8");
 const contentSource = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
 
-function createChat() {
+function createChat(options = {}) {
   const phrase = "!!!У НАС ПРОБЛЕМА!!!";
   let now = 10000, nextTimer = 0;
   let poll, inspectMutations, keydown;
@@ -18,6 +18,7 @@ function createChat() {
   const mutations = [];
   const sent = [];
   const ui = [];
+  const pageAttributes = options.pageAttributes || {};
 
   function node(text = "") {
     const attrs = {};
@@ -47,7 +48,7 @@ function createChat() {
     return element;
   }
 
-  const status = node(phrase);
+  let status = node(phrase);
   const body = {
     contains(other) { return other === status || other === assistant || ui.includes(other); },
     appendChild(element) {
@@ -58,7 +59,10 @@ function createChat() {
   };
 
   const document = {
-    documentElement: {},
+    documentElement: {
+      getAttribute(name) { return pageAttributes[name] || null; },
+      setAttribute(name, value) { pageAttributes[name] = value; }
+    },
     body,
     querySelector: () => null,
     querySelectorAll(selector) {
@@ -146,6 +150,7 @@ function createChat() {
     },
     showStatus(value) { statusVisible = value; },
     changeStatus(value) { status.innerText = value; status.textContent = value; },
+    recreateStatus() { status = node(phrase); },
     setAssistant(value) { assistant = node(value); assistant.closest = () => null; },
     newUser(value) {
       const user = node(value);
@@ -247,18 +252,40 @@ test("same error from status and assistant is a single dismissed incident", asyn
   assert.equal(app.count("PLAY_ERROR"), 1);
 });
 
-test("genuinely new same-text error re-arms after previous error disappeared", async () => {
+test("dismissed error cannot reopen after DOM flickers, even with long gaps", async () => {
   const app = createChat();
   await app.start();
   app.showStatus(true);
   app.poll();
   app.close();
-  app.showStatus(false);
+  for (let i = 0; i < 6; i++) {
+    app.showStatus(false);
+    app.poll();
+    await app.advance(3500);
+    app.showStatus(true);
+    app.poll();
+    assert.equal(app.dialogCount(), 0, "flickering same incident must stay dismissed");
+  }
+  assert.equal(app.count("PLAY_ERROR"), 1);
+  app.newUser("Ещё один запрос");
+  app.recreateStatus();
   app.poll();
-  await app.advance(2700);
-  app.poll(); // The old error has been absent for more than 2.5 seconds.
-  app.showStatus(true);
-  app.poll();
-  assert.equal(app.dialogCount(), 1, "a new appearance of the error should alert");
+  assert.equal(app.dialogCount(), 1, "a genuinely new error after a new user turn may alert");
   assert.equal(app.count("PLAY_ERROR"), 2);
+});
+
+test("dismissal is shared between separate observers on the same page", async () => {
+  const pageAttributes = {};
+  const first = createChat({ pageAttributes });
+  await first.start();
+  first.showStatus(true);
+  first.poll();
+  first.close();
+  assert.ok(pageAttributes["data-chat-watchdog-error-acks"], "ack in shared DOM");
+  const second = createChat({ pageAttributes });
+  await second.start();
+  second.showStatus(true);
+  second.poll();
+  assert.equal(second.dialogCount(), 0, "reinjected scripts honor prior dismissal");
+  assert.equal(second.count("PLAY_ERROR"), 0);
 });

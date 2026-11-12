@@ -1,5 +1,13 @@
 # Chat Watchdog
 
+## 0.2.21 — bundled error sound and repeated-dialog hotfix
+
+- Built-in error audio (`sounds/01507.mp3`) now loads as a Blob in the offscreen page, following the same playback path as user-uploaded audio. It falls back to the extension resource URL if fetching the bundled file fails. Playback failures are reported in the diagnostic journal.
+- Once an error dialog is dismissed, its incident stays acknowledged for that user turn and phrase even if ChatGPT briefly removes and restores the notification. A changed error or a new occurrence on a new turn can still notify. A page-shared acknowledgement prevents duplicate observers of this version from re-opening the same dismissed error.
+- Added English `Unknown error` and Russian `Неизвестная ошибка` to built-in error recognition, including migration for existing saved settings without resetting custom phrases.
+- Auto-continuation, completion audio, and five-send-attempt protection remain unchanged.
+
+
 ## 0.2.20 — one error dialog per incident
 
 - Treat concurrent representations of one error (status/toast/assistant) as one dismissible incident. After dismissal, an unchanged incident remains acknowledged despite DOM repaints. A different error or a new occurrence after disappearance can alert normally.

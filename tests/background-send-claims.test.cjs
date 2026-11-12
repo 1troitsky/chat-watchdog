@@ -87,6 +87,12 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }, alarmState = 
         { tab: { id: tabId, url } }, resolve), true);
     });
   }
+  async function error(tabId = 7, url = "https://chatgpt.com/c/a") {
+    return new Promise(resolve => {
+      assert.equal(onMessage({ type: "PLAY_ERROR" },
+        { tab: { id: tabId, url } }, resolve), true);
+    });
+  }
   async function completion(token, tabId = 7, url = "https://chatgpt.com/c/a") {
     return new Promise(resolve => {
       assert.equal(onMessage({ type: "PLAY_COMPLETION", token },
@@ -98,7 +104,7 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }, alarmState = 
       enabled: true, mode: "auto", origin: "https://chatgpt.com", ...overrides
     });
   }
-  return { claim, release, completion, state, configure, saved, clock, playback,
+  return { claim, release, completion, error, state, configure, saved, clock, playback,
     setHealthTabs(value, isReachable) { tabs = value; reachable = isReachable; },
     async runHealthAlarm() { onAlarm({ name: "chat-watchdog-health" });
       for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve)); },
@@ -424,4 +430,16 @@ test("only-autocontinue mode keeps error sounds off with bundled defaults", asyn
   assert.equal((await app.completion("first")).ok, true);
   assert.equal(app.playback.filter(x => x.type === "OFFSCREEN_PLAY" &&
     x.kind === "completion").length, 1);
+});
+
+test("error playback reports offscreen result to the originating content script", async () => {
+  const app = createWorker();
+  app.configure();
+  const result = await app.error();
+  assert.equal(result.ok, true);
+  assert.equal(app.playback.filter(x => x.type === "OFFSCREEN_PLAY" && x.kind === "error").length, 1);
+  app.configure(7, {mode: "continue"});
+  const disabled = await app.error();
+  assert.equal(disabled.ok, false);
+  assert.equal(disabled.reason, "inactive-or-error-sounds-disabled");
 });

@@ -31,10 +31,37 @@ async function playForTab(tabId, kind = "error") {
   if (revisions.get(key) !== revision) return { ok: false, cancelled: true };
 
   releasePlayer(key);
-  const objectUrl = file ? URL.createObjectURL(file) : null;
-  const src = objectUrl || chrome.runtime.getURL(
-    kind === "completion" ? "sounds/sfx-16.mp3" : "sounds/01507.mp3"
-  );
+  let objectUrl = null;
+  let src;
+  let source = "custom";
+  if (file) {
+    objectUrl = URL.createObjectURL(file);
+    src = objectUrl;
+  } else {
+    // Chrome has behaved differently for URL-backed MP3 and uploaded Blob
+    // audio on some installations. Load bundled audio as a Blob too, using
+    // the same path as the working user-selected override.
+    const resource = kind === "completion" ? "sounds/sfx-16.mp3" : "sounds/01507.mp3";
+    const url = chrome.runtime.getURL(resource);
+    try {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error("Bundled audio HTTP " + response.status);
+      const blob = await response.blob();
+      if (!blob.size) throw new Error("Bundled audio is empty: " + resource);
+      objectUrl = URL.createObjectURL(blob.type ? blob : new Blob([blob], { type: "audio/mpeg" }));
+      src = objectUrl;
+      source = "bundled-blob";
+    } catch (error) {
+      // Missing fetch permission/API or an unavailable bundle: try direct URL
+      // as last resort. If playback fails, report it back to the content log.
+      src = url;
+      source = "bundled-url-fallback";
+    }
+  }
+  if (revisions.get(key) !== revision) {
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    return { ok: false, cancelled: true };
+  }
   const audio = new Audio(src);
   audio.loop = false;
   players.set(key, { audio, objectUrl });
@@ -44,10 +71,10 @@ async function playForTab(tabId, kind = "error") {
   try {
     await audio.play();
     if (revisions.get(key) !== revision) return { ok: false, cancelled: true };
-    return { ok: true };
+    return { ok: true, source };
   } catch (error) {
     if (players.get(key)?.audio === audio) releasePlayer(key);
-    return { ok: false, error: String(error) };
+    return { ok: false, source, error: String(error) };
   }
 }
 

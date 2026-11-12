@@ -1,5 +1,12 @@
 # Chat Watchdog
 
+## 0.2.20 — one error dialog per incident
+
+- Treat concurrent representations of one error (status/toast/assistant) as one dismissible incident. After dismissal, an unchanged incident remains acknowledged despite DOM repaints. A different error or a new occurrence after disappearance can alert normally.
+- Check the page for an existing Watchdog dialog before opening one; duplicate content-script instances cannot stack more dialogs. Closing a dialog clears any older duplicate overlays.
+- Keep repeated alerts for genuinely new errors; no changes to automatic sending, modes, or bundled sounds.
+
+
 ## 0.2.19 — bundled completion sound hotfix
 
 - Fixed the default completion sound (`sounds/sfx-16.mp3`) never being requested when no custom completion MP3 was selected. The completion event now always requests playback after the reply has finished; the existing one-time-per-reply guards remain active.

@@ -62,6 +62,8 @@ function createChat() {
     body,
     querySelector: () => null,
     querySelectorAll(selector) {
+      if (selector === "#chat-watchdog-alert-host")
+        return ui.filter(n => n.id === "chat-watchdog-alert-host");
       if (selector === "[data-chat-watchdog-toast]") {
         return ui.filter(n => n.getAttribute("data-chat-watchdog-toast") !== null);
       }
@@ -136,6 +138,12 @@ function createChat() {
   }
   return {
     start, poll, close, advance, flushMutations,
+    dialogCount() { return ui.filter(n => n.id === "chat-watchdog-alert-host").length; },
+    addExternalDialog() {
+      const host = node();
+      host.id = "chat-watchdog-alert-host";
+      body.appendChild(host);
+    },
     showStatus(value) { statusVisible = value; },
     changeStatus(value) { status.innerText = value; status.textContent = value; },
     setAssistant(value) { assistant = node(value); assistant.closest = () => null; },
@@ -198,4 +206,59 @@ test("repainting an identical assistant error does not re-open its dialog", asyn
   app.setAssistant("!!!У НАС ПРОБЛЕМА!!!");
   app.poll();
   assert.equal(app.count("PLAY_ERROR"), 2, "another user turn is a new error");
+});
+
+
+test("another active Watchdog instance cannot stack a second error dialog", async () => {
+  const app = createChat();
+  await app.start();
+  app.addExternalDialog(); // Simulate an overlay opened by a second copy.
+  app.showStatus(true);
+  app.poll();
+  assert.equal(app.dialogCount(), 1, "the existing page-level dialog must be reused");
+  assert.equal(app.count("PLAY_ERROR"), 0, "don't start an additional alarm for existing dialog");
+});
+
+test("one dismissal removes older duplicate overlays left by another instance", async () => {
+  const app = createChat();
+  await app.start();
+  app.showStatus(true);
+  app.poll();
+  assert.equal(app.dialogCount(), 1);
+  app.addExternalDialog();
+  app.addExternalDialog();
+  assert.equal(app.dialogCount(), 3, "simulate three stacked dialogs");
+  app.close();
+  assert.equal(app.dialogCount(), 0, "one close must remove all three dialogs");
+  app.flushMutations();
+  app.poll();
+  assert.equal(app.dialogCount(), 0, "already acknowledged error stays closed");
+});
+
+test("same error from status and assistant is a single dismissed incident", async () => {
+  const app = createChat();
+  await app.start();
+  app.showStatus(true);
+  app.poll();
+  app.close();
+  app.setAssistant("!!!У НАС ПРОБЛЕМА!!!"); // A second presentation of the same failure
+  app.poll();
+  assert.equal(app.dialogCount(), 0, "don't reopen the same incident in another UI location");
+  assert.equal(app.count("PLAY_ERROR"), 1);
+});
+
+test("genuinely new same-text error re-arms after previous error disappeared", async () => {
+  const app = createChat();
+  await app.start();
+  app.showStatus(true);
+  app.poll();
+  app.close();
+  app.showStatus(false);
+  app.poll();
+  await app.advance(2700);
+  app.poll(); // The old error has been absent for more than 2.5 seconds.
+  app.showStatus(true);
+  app.poll();
+  assert.equal(app.dialogCount(), 1, "a new appearance of the error should alert");
+  assert.equal(app.count("PLAY_ERROR"), 2);
 });

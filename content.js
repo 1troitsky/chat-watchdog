@@ -19,6 +19,28 @@
   let lastClaimedAssistantOrdinal = 0;
   let dialogRoot = null;
   let dialogError = null;
+  // Dismiss one visible error incident only once, even if ChatGPT shows the
+  // same failure in a toast, assistant turn and status element. A different
+  // error phrase or a new turn remains eligible to trigger another alert.
+  const dismissedErrorIncidents = new Map();
+  let visibleErrorIncidents = new Set();
+  const ERROR_ABSENCE_RESET_MS = 2500;
+
+  function errorIncidentKey(phrase) {
+    const userTurn = latestUserTurn().logicalTurn || "no-user-turn";
+    return route + "|" + userTurn + "|" + String(phrase).toLocaleLowerCase().trim();
+  }
+
+  function trackErrorIncidents(activeKeys) {
+    visibleErrorIncidents = activeKeys;
+    const now = Date.now();
+    for (const [key, absentSince] of dismissedErrorIncidents) {
+      if (activeKeys.has(key)) dismissedErrorIncidents.set(key, null);
+      else if (absentSince === null) dismissedErrorIncidents.set(key, now);
+      else if (now - absentSince >= ERROR_ABSENCE_RESET_MS)
+        dismissedErrorIncidents.delete(key);
+    }
+  }
   let sendClicks = 0;
   let lastClickAt = 0;
   let globalLockedUntil = 0;
@@ -303,8 +325,7 @@
     const message = "Ответ завершился без маркера «" + config.marker + "» (возможен обрыв)";
     recordEvent("error", message);
     if (dialogRoot) dialogError.textContent = message;
-    else {
-      showDialog(message);
+    else if (showDialog(message)) {
       chrome.runtime.sendMessage({ type: "PLAY_ERROR" }).catch(() => {});
     }
   }
@@ -371,9 +392,14 @@
 
   function closeDialog() {
     if (dialogRoot) {
+      for (const key of visibleErrorIncidents)
+        dismissedErrorIncidents.set(key, null);
       dialogRoot.remove();
       dialogRoot = null;
       dialogError = null;
+      // Older injected scripts or duplicate installations may have created
+      // additional overlays. One user dismissal removes all of them.
+      for (const duplicate of query("#chat-watchdog-alert-host")) duplicate.remove();
     }
     document.removeEventListener("keydown", handleDialogKeydown, true);
     chrome.runtime.sendMessage({ type: "STOP_ERROR" }).catch(() => {});
@@ -389,9 +415,18 @@
 
   function showDialog(message) {
     if (dialogRoot) {
-      dialogError.textContent = message;
-      return;
+      if (query("#chat-watchdog-alert-host").includes(dialogRoot)) {
+        dialogError.textContent = message;
+        return false;
+      }
+      // A previous owner removed our host; discard the stale local pointer.
+      dialogRoot = null;
+      dialogError = null;
     }
+    // A content-script reinjection or second extension copy has a different
+    // JS closure. The DOM, unlike dialogRoot, is shared by both. Only one
+    // modal is allowed per page; don't play a second alarm for it either.
+    if (query("#chat-watchdog-alert-host").length) return false;
     const host = document.createElement("div");
     host.id = "chat-watchdog-alert-host";
     host.style.cssText = "position:fixed;inset:0;z-index:2147483647;";
@@ -436,6 +471,7 @@
     (document.body || document.documentElement).appendChild(host);
     document.addEventListener("keydown", handleDialogKeydown, true);
     shadow.querySelector(".close").focus();
+    return true;
   }
 
   // Prefer the most specific descendant containing the error. Some sites
@@ -515,13 +551,13 @@
         }
       }
     }
+    trackErrorIncidents(new Set(matches.map((entry) => errorIncidentKey(entry.phrase))));
     const fresh = errorTracker.observe(matches);
-    if (fresh) {
+    if (fresh && !dismissedErrorIncidents.has(errorIncidentKey(fresh.phrase))) {
       recordEvent("error", "Ошибка: " + fresh.phrase);
       if (dialogRoot) {
         dialogError.textContent = "Обнаружена ошибка: " + fresh.phrase;
-      } else {
-        showDialog(fresh.phrase);
+      } else if (showDialog(fresh.phrase)) {
         chrome.runtime.sendMessage({ type: "PLAY_ERROR" }).catch(() => {});
       }
     }

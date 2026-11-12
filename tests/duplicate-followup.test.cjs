@@ -745,6 +745,28 @@ test("a zero-width-only composer is considered empty", async () => {
 });
 
 
+test("bundled completion sound plays without custom audio selection and only once per answer", async () => {
+  const chat = createHarness({ mode: "errors", completionAudioName: "",
+    marker: "!!!ГОТОВО!!!", replyText: "Ответ без маркера" });
+  await chat.baseline();
+  await chat.advance(3100);
+  chat.poll();
+  assert.equal(chat.sentRuntimeMessages.filter(x => x === "PLAY_COMPLETION").length, 1,
+    "default sound must be requested even when completionAudioName is empty");
+  chat.rerenderOldTurn();
+  await chat.advance(8000);
+  chat.poll();
+  assert.equal(chat.sentRuntimeMessages.filter(x => x === "PLAY_COMPLETION").length, 1,
+    "same assistant answer must not replay its completion sound");
+  chat.nextUser();
+  chat.nextAssistant();
+  chat.poll();
+  await chat.advance(3100);
+  chat.poll();
+  assert.equal(chat.sentRuntimeMessages.filter(x => x === "PLAY_COMPLETION").length, 2,
+    "a new assistant answer gets one new bundled completion sound");
+});
+
 test("completion sound plays exactly once for a markerless reply, even in errors-only mode", async () => {
   const chat = createHarness({ mode: "errors", completionAudioName: "done.mp3",
     marker: "!!!ГОТОВО!!!", replyText: "Обычный ответ без маркера" });

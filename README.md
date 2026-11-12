@@ -1,5 +1,12 @@
 # Chat Watchdog
 
+## 0.2.19 — bundled completion sound hotfix
+
+- Fixed the default completion sound (`sounds/sfx-16.mp3`) never being requested when no custom completion MP3 was selected. The completion event now always requests playback after the reply has finished; the existing one-time-per-reply guards remain active.
+- Custom completion audio remains an override; the recurring error sound and automatic continuation logic are unchanged.
+- Added a regression test for a fresh installation without any selected completion audio.
+
+
 ## 0.2.18 — bundled default audio
 
 - Two bundled sounds work immediately with **no file selection**: `sounds/sfx-16.mp3` plays **once per new completed assistant answer**; `sounds/01507.mp3` is used for **each new detected error**, preserving the original error alert behavior.

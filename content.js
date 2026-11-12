@@ -264,9 +264,10 @@
     completionNotified.add(token);
     if (completionNotified.size > 200) completionNotified.delete(completionNotified.values().next().value);
     completionNotifications++;
-    if (config.completionAudioName) {
-      chrome.runtime.sendMessage({ type: "PLAY_COMPLETION", token }).catch(() => {});
-    }
+    // Playback is available from bundled sounds even when no custom file
+    // has been selected. Background/offscreen chooses the configured override
+    // or bundled sfx-16.mp3 and deduplicates each assistant completion.
+    chrome.runtime.sendMessage({ type: "PLAY_COMPLETION", token }).catch(() => {});
   }
 
   // Optional heuristic: a stable answer without a configured completion

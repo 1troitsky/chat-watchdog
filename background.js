@@ -43,6 +43,29 @@ async function claimErrorDialog(tabId, sender, incidentKey) {
   });
 }
 
+async function playErrorIncidentOnce(tabId, sender, incidentKey) {
+  if (typeof incidentKey !== "string" || !incidentKey || incidentKey.length > 2048 ||
+      !sender.tab?.url) return { ok: false, reason: "invalid-audio-incident" };
+  const scope = "watchdog:error-audio:" + tabId;
+  const page = new URL(sender.tab.url);
+  const claim = await withDialogLock(tabId, async () => {
+    const saved = await chrome.storage.session.get([key(tabId), scope]);
+    const config = saved[key(tabId)];
+    if (!config?.enabled || config.mode === "continue" || config.origin !== page.origin)
+      return { ok: false, reason: "inactive-or-error-sounds-disabled" };
+    const ledger = saved[scope];
+    const seen = ledger?.origin === page.origin && Array.isArray(ledger?.incidents) ?
+      ledger.incidents : [];
+    if (seen.includes(incidentKey)) return { ok: false, reason: "audio-incident-duplicate" };
+    await chrome.storage.session.set({ [scope]: {
+      origin: page.origin, incidents: [...seen.slice(-199), incidentKey]
+    } });
+    return { ok: true };
+  });
+  if (!claim.ok) return claim;
+  return playTabAudio(tabId, sender, "error");
+}
+
 async function releaseErrorDialog(tabId, sender, leaseId) {
   if (!leaseId || !sender.tab?.url) return { ok: false, reason: "invalid-dialog-release" };
   return withDialogLock(tabId, async () => {
@@ -389,7 +412,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   if (message.type === "PLAY_ERROR") {
-    playTabAudio(tabId, sender).then(sendResponse).catch(error => {
+    // Legacy callers without an incidentKey still play directly. New content
+    // scripts supply one to guarantee one sound per new incident per tab.
+    const playback = message.incidentKey ?
+      playErrorIncidentOnce(tabId, sender, message.incidentKey) :
+      playTabAudio(tabId, sender);
+    playback.then(sendResponse).catch(error => {
       console.warn("Chat Watchdog audio:", error);
       sendResponse({ ok: false, error: String(error) });
     });
@@ -404,8 +432,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
   if (info.status === "loading") {
-    // A navigation destroys the old modal even without its close event.
-    withDialogLock(tabId, () => chrome.storage.session.remove(dialogLeaseKey(tabId)))
+    // New document: allow alerts for new incidents without stale tab tokens.
+    withDialogLock(tabId, () => chrome.storage.session.remove([
+      dialogLeaseKey(tabId), "watchdog:error-audio:" + tabId
+    ]))
       .catch(console.warn);
     stopTabAudio(tabId).catch(console.warn);
     return;
@@ -433,7 +463,8 @@ chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   stopTabAudio(tabId).catch(() => {});
   // Keep the shared conversation ledger while another tab may be open.
-  chrome.storage.session.remove([key(tabId), dialogLeaseKey(tabId)]).catch(() => {});
+  chrome.storage.session.remove([key(tabId), dialogLeaseKey(tabId),
+    "watchdog:error-audio:" + tabId]).catch(() => {});
   ChatWatchdogAudio.remove(tabId).catch(() => {});
   ChatWatchdogAudio.remove(tabId, "completion").catch(() => {});
   audioEpochs.delete(tabId + ":error");

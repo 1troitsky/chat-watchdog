@@ -20,6 +20,8 @@ function createChat(options = {}) {
   const ui = [];
   const pageAttributes = options.pageAttributes || {};
   const activeDialogLeases = options.activeDialogLeases || new Set();
+  const playedAudioIncidents = options.playedAudioIncidents || new Set();
+  let soundPlayed = 0;
   let leasesIssued = 0;
 
   function node(text = "") {
@@ -103,6 +105,13 @@ function createChat(options = {}) {
       onMessage: { addListener() {} },
       sendMessage: async (msg) => {
         sent.push(msg.type);
+        if (msg.type === "PLAY_ERROR" && msg.incidentKey) {
+          if (playedAudioIncidents.has(msg.incidentKey))
+            return { ok: false, reason: "audio-incident-duplicate" };
+          playedAudioIncidents.add(msg.incidentKey);
+          soundPlayed++;
+          return { ok: true };
+        }
         if (msg.type === "CLAIM_ERROR_DIALOG") {
           if (activeDialogLeases.size) return { ok: false, reason: "dialog-already-open" };
           const leaseId = "error:" + (++leasesIssued);
@@ -175,7 +184,7 @@ function createChat(options = {}) {
       user.compareDocumentPosition = () => 4;
       users.push(user);
     },
-    count(type) { return sent.filter(x => x === type).length; }
+    count(type) { return type === "PLAY_ERROR" ? soundPlayed : sent.filter(x => x === type).length; }
   };
 }
 
@@ -245,7 +254,7 @@ test("another active Watchdog instance cannot stack a second error dialog", asyn
   app.poll();
   await app.flush();
   assert.equal(app.dialogCount(), 1, "the existing page-level dialog must be reused");
-  assert.equal(app.count("PLAY_ERROR"), 0, "don't start an additional alarm for existing dialog");
+  assert.equal(app.count("PLAY_ERROR"), 1, "a new incident still sounds when another modal is already open");
 });
 
 test("one dismissal removes older duplicate overlays left by another instance", async () => {
@@ -327,8 +336,9 @@ test('two independent observers opening errors simultaneously show only one dial
   // Separate simulated page documents (as in isolated frame contexts) share a
   // single background tab-level dialog claim. One must be rejected.
   const activeDialogLeases = new Set();
-  const first = createChat({activeDialogLeases});
-  const second = createChat({activeDialogLeases});
+  const playedAudioIncidents = new Set();
+  const first = createChat({activeDialogLeases, playedAudioIncidents});
+  const second = createChat({activeDialogLeases, playedAudioIncidents});
   await Promise.all([first.start(), second.start()]);
   first.showStatus(true); second.showStatus(true);
   first.poll(); second.poll(); // Both try to open on the same microtask turn.

@@ -356,10 +356,9 @@
       missingMarkerNotified.delete(missingMarkerNotified.values().next().value);
     const message = "Ответ завершился без маркера «" + config.marker + "» (возможен обрыв)";
     recordEvent("error", message);
+    playErrorSound(errorIncidentKey(message));
     if (dialogRoot) dialogError.textContent = message;
-    else showDialog(message).then(opened => {
-      if (opened) playErrorSound();
-    });
+    else showDialog(message);
   }
 
   function messageKey(node, count, text) {
@@ -422,11 +421,13 @@
       .some(button => visible(button) && Core.isStopAction(button));
   }
 
-  function playErrorSound() {
-    // Unlike the completion channel, an audio failure needs to be visible in
-    // the per-tab diagnostic log rather than disappearing in the service worker.
-    chrome.runtime.sendMessage({ type: "PLAY_ERROR" }).then(result => {
-      if (result && result.ok === false && !result.cancelled)
+  function playErrorSound(incidentKey) {
+    // Sound is a notification about a NEW error, not a side effect of creating
+    // a modal. A denied modal claim must never silence a new error. The worker
+    // atomically deduplicates incidentKey across observers within this tab.
+    chrome.runtime.sendMessage({ type: "PLAY_ERROR", incidentKey }).then(result => {
+      if (result && result.ok === false && !result.cancelled &&
+          result.reason !== "audio-incident-duplicate")
         recordEvent("error", "Звук ошибки не воспроизведён: " +
           (result.error || result.reason || "неизвестная причина"));
     }).catch(error => recordEvent("error", "Ошибка запуска звука: " + String(error)));
@@ -635,12 +636,13 @@
     const fresh = errorTracker.observe(matches);
     if (fresh && !isErrorAcknowledged(errorIncidentKey(fresh.phrase))) {
       recordEvent("error", "Ошибка: " + fresh.phrase);
+      // Audio must not depend on whether the tab-wide modal is newly opened,
+      // already open, or temporarily blocked by a stale dialog lease.
+      playErrorSound(errorIncidentKey(fresh.phrase));
       if (dialogRoot) {
         dialogError.textContent = "Обнаружена ошибка: " + fresh.phrase;
       } else {
-        showDialog(fresh.phrase).then(opened => {
-          if (opened) playErrorSound();
-        });
+        showDialog(fresh.phrase);
       }
     }
     return assistantErrorActive || matches.length > 0;

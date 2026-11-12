@@ -99,9 +99,9 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }, alarmState = 
         { tab: { id: tabId, url } }, resolve), true);
     });
   }
-  async function error(tabId = 7, url = "https://chatgpt.com/c/a") {
+  async function error(tabId = 7, url = "https://chatgpt.com/c/a", incidentKey = null) {
     return new Promise(resolve => {
-      assert.equal(onMessage({ type: "PLAY_ERROR" },
+      assert.equal(onMessage({ type: "PLAY_ERROR", incidentKey },
         { tab: { id: tabId, url } }, resolve), true);
     });
   }
@@ -488,4 +488,36 @@ test('modal ownership never expires while the first dialog is still open', async
   assert.equal((await app.claimErrorDialog('first')).ok, true);
   app.clock.now += 20 * 60 * 1000;
   assert.equal((await app.claimErrorDialog('second')).reason, 'dialog-already-open');
+});
+
+
+test("audio still plays if the tab-wide dialog lease is occupied", async () => {
+  const app = createWorker();
+  app.configure();
+  assert.equal((await app.claimErrorDialog("old-incident")).ok, true);
+  const result = await app.error(7, "https://chatgpt.com/c/a", "new-incident");
+  assert.equal(result.ok, true);
+  assert.equal(app.playback.filter(x => x.type === "OFFSCREEN_PLAY" && x.kind === "error").length, 1,
+    "a new error must play even when it cannot open a new modal");
+});
+
+test("parallel observers only play a new error sound once, and a second incident plays again", async () => {
+  const app = createWorker();
+  app.configure();
+  const results = await Promise.all(Array.from({length: 20}, () =>
+    app.error(7, "https://chatgpt.com/c/a", "incident:1")));
+  assert.equal(results.filter(x => x.ok).length, 1);
+  assert.equal(app.playback.filter(x => x.type === "OFFSCREEN_PLAY" && x.kind === "error").length, 1);
+  assert.equal((await app.error(7, "https://chatgpt.com/c/a", "incident:2")).ok, true);
+  assert.equal(app.playback.filter(x => x.type === "OFFSCREEN_PLAY" && x.kind === "error").length, 2);
+});
+
+test("audio incident is retained after service worker restart", async () => {
+  const saved = new Map();
+  const first = createWorker(saved); first.configure();
+  assert.equal((await first.error(7, "https://chatgpt.com/c/a", "incident:X")).ok, true);
+  const next = createWorker(saved);
+  const duplicate = await next.error(7, "https://chatgpt.com/c/a", "incident:X");
+  assert.equal(duplicate.reason, "audio-incident-duplicate");
+  assert.equal(next.playback.filter(x => x.type === "OFFSCREEN_PLAY").length, 0);
 });

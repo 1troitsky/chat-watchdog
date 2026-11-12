@@ -19,6 +19,8 @@ function createChat(options = {}) {
   const sent = [];
   const ui = [];
   const pageAttributes = options.pageAttributes || {};
+  const activeDialogLeases = options.activeDialogLeases || new Set();
+  let leasesIssued = 0;
 
   function node(text = "") {
     const attrs = {};
@@ -49,6 +51,7 @@ function createChat(options = {}) {
   }
 
   let status = node(phrase);
+  if (options.statusWrapsHistory) status.querySelector = () => node('old chat turn');
   const body = {
     contains(other) { return other === status || other === assistant || ui.includes(other); },
     appendChild(element) {
@@ -100,6 +103,17 @@ function createChat(options = {}) {
       onMessage: { addListener() {} },
       sendMessage: async (msg) => {
         sent.push(msg.type);
+        if (msg.type === "CLAIM_ERROR_DIALOG") {
+          if (activeDialogLeases.size) return { ok: false, reason: "dialog-already-open" };
+          const leaseId = "error:" + (++leasesIssued);
+          activeDialogLeases.add(leaseId);
+          return { ok: true, leaseId };
+        }
+        if (msg.type === "RELEASE_ERROR_DIALOG") {
+          if (!activeDialogLeases.has(msg.leaseId)) return { ok: false };
+          activeDialogLeases.delete(msg.leaseId);
+          return { ok: true };
+        }
         if (msg.type === "GET_SEND_STATE") return { ok: true, lockedUntil: 0 };
         return msg.type === "GET_CONFIG" ? {
           enabled: true, mode: "errors", toastEnabled: true,
@@ -119,6 +133,9 @@ function createChat(options = {}) {
     for (let i = 0; i < 10; i++) await Promise.resolve();
     poll();
   }
+  async function flush() {
+    for (let i = 0; i < 15; i++) await Promise.resolve();
+  }
   function flushMutations() {
     for (let i = 0; i < 10 && mutations.length; i++) {
       inspectMutations(mutations.splice(0));
@@ -133,15 +150,16 @@ function createChat(options = {}) {
         jobs.delete(id);
         task.fn();
       }
-      await Promise.resolve();
+      await flush();
     }
+    await flush();
   }
   function close() {
     assert.equal(typeof keydown, "function", "dialog should be open");
     keydown({ key: "Escape", preventDefault() {}, stopPropagation() {} });
   }
   return {
-    start, poll, close, advance, flushMutations,
+    start, poll, close, advance, flush, flushMutations,
     dialogCount() { return ui.filter(n => n.id === "chat-watchdog-alert-host").length; },
     addExternalDialog() {
       const host = node();
@@ -166,6 +184,7 @@ test("own error toast and dialog must not re-trigger an acknowledged error", asy
   await app.start();
   app.showStatus(true);
   app.poll(); // Real error => dialog, toast, PLAY_ERROR.
+  await app.flush();
   assert.equal(app.count("PLAY_ERROR"), 1);
   app.flushMutations(); // Observer sees our own error text in the toast.
   app.close();
@@ -184,11 +203,13 @@ test("same persistent error is dismissed, but a later changed error alerts", asy
   await app.start();
   app.showStatus(true);
   app.poll();
+  await app.flush();
   assert.equal(app.count("PLAY_ERROR"), 1);
   app.close();
   app.flushMutations();
   app.changeStatus("!!!ЖДУ РЕШЕНИЕ!!!");
   app.poll();
+  await app.flush();
   assert.equal(app.count("PLAY_ERROR"), 2, "a new error message should still alert");
 });
 
@@ -198,6 +219,7 @@ test("repainting an identical assistant error does not re-open its dialog", asyn
   app.newUser("Проверка");
   app.setAssistant("!!!У НАС ПРОБЛЕМА!!!");
   app.poll();
+  await app.flush();
   assert.equal(app.count("PLAY_ERROR"), 1);
   app.close();
   app.flushMutations();
@@ -210,6 +232,7 @@ test("repainting an identical assistant error does not re-open its dialog", asyn
   app.newUser("Продолжи");
   app.setAssistant("!!!У НАС ПРОБЛЕМА!!!");
   app.poll();
+  await app.flush();
   assert.equal(app.count("PLAY_ERROR"), 2, "another user turn is a new error");
 });
 
@@ -220,6 +243,7 @@ test("another active Watchdog instance cannot stack a second error dialog", asyn
   app.addExternalDialog(); // Simulate an overlay opened by a second copy.
   app.showStatus(true);
   app.poll();
+  await app.flush();
   assert.equal(app.dialogCount(), 1, "the existing page-level dialog must be reused");
   assert.equal(app.count("PLAY_ERROR"), 0, "don't start an additional alarm for existing dialog");
 });
@@ -229,6 +253,7 @@ test("one dismissal removes older duplicate overlays left by another instance", 
   await app.start();
   app.showStatus(true);
   app.poll();
+  await app.flush();
   assert.equal(app.dialogCount(), 1);
   app.addExternalDialog();
   app.addExternalDialog();
@@ -237,6 +262,7 @@ test("one dismissal removes older duplicate overlays left by another instance", 
   assert.equal(app.dialogCount(), 0, "one close must remove all three dialogs");
   app.flushMutations();
   app.poll();
+  await app.flush();
   assert.equal(app.dialogCount(), 0, "already acknowledged error stays closed");
 });
 
@@ -245,9 +271,11 @@ test("same error from status and assistant is a single dismissed incident", asyn
   await app.start();
   app.showStatus(true);
   app.poll();
+  await app.flush();
   app.close();
   app.setAssistant("!!!У НАС ПРОБЛЕМА!!!"); // A second presentation of the same failure
   app.poll();
+  await app.flush();
   assert.equal(app.dialogCount(), 0, "don't reopen the same incident in another UI location");
   assert.equal(app.count("PLAY_ERROR"), 1);
 });
@@ -257,6 +285,7 @@ test("dismissed error cannot reopen after DOM flickers, even with long gaps", as
   await app.start();
   app.showStatus(true);
   app.poll();
+  await app.flush();
   app.close();
   for (let i = 0; i < 6; i++) {
     app.showStatus(false);
@@ -264,12 +293,14 @@ test("dismissed error cannot reopen after DOM flickers, even with long gaps", as
     await app.advance(3500);
     app.showStatus(true);
     app.poll();
+    await app.flush();
     assert.equal(app.dialogCount(), 0, "flickering same incident must stay dismissed");
   }
   assert.equal(app.count("PLAY_ERROR"), 1);
   app.newUser("Ещё один запрос");
   app.recreateStatus();
   app.poll();
+  await app.flush();
   assert.equal(app.dialogCount(), 1, "a genuinely new error after a new user turn may alert");
   assert.equal(app.count("PLAY_ERROR"), 2);
 });
@@ -280,12 +311,58 @@ test("dismissal is shared between separate observers on the same page", async ()
   await first.start();
   first.showStatus(true);
   first.poll();
+  await first.flush();
   first.close();
   assert.ok(pageAttributes["data-chat-watchdog-error-acks"], "ack in shared DOM");
   const second = createChat({ pageAttributes });
   await second.start();
   second.showStatus(true);
   second.poll();
+  await second.flush();
   assert.equal(second.dialogCount(), 0, "reinjected scripts honor prior dismissal");
   assert.equal(second.count("PLAY_ERROR"), 0);
+});
+
+test('two independent observers opening errors simultaneously show only one dialog BEFORE dismissal', async () => {
+  // Separate simulated page documents (as in isolated frame contexts) share a
+  // single background tab-level dialog claim. One must be rejected.
+  const activeDialogLeases = new Set();
+  const first = createChat({activeDialogLeases});
+  const second = createChat({activeDialogLeases});
+  await Promise.all([first.start(), second.start()]);
+  first.showStatus(true); second.showStatus(true);
+  first.poll(); second.poll(); // Both try to open on the same microtask turn.
+  await Promise.all([first.flush(), second.flush()]);
+  assert.equal(first.dialogCount() + second.dialogCount(), 1,
+    'only one visible modal, before ANY close click');
+  assert.equal(first.count('PLAY_ERROR') + second.count('PLAY_ERROR'), 1,
+    'the shared alert must not start two error sounds');
+  assert.equal(activeDialogLeases.size, 1);
+});
+
+test('a marker embedded in the middle of the current answer is not an error', async () => {
+  const app = createChat();
+  await app.start();
+  app.newUser('Проверь ответ');
+  app.setAssistant('!!!У НАС ПРОБЛЕМА!!!\n!!!ГОТОВО!!!');
+  app.poll();
+  await app.flush();
+  assert.equal(app.dialogCount(), 0);
+  assert.equal(app.count('PLAY_ERROR'), 0);
+  app.setAssistant('!!!ГОТОВО!!!\n!!!У НАС ПРОБЛЕМА!!!');
+  app.poll();
+  await app.flush();
+  assert.equal(app.dialogCount(), 1, 'error on last line is eligible');
+  assert.equal(app.count('PLAY_ERROR'), 1);
+});
+
+
+test('role=status wrapping chat history is never classified as a new system error', async () => {
+  const app = createChat({statusWrapsHistory: true});
+  await app.start();
+  app.showStatus(true);
+  app.poll();
+  await app.flush();
+  assert.equal(app.dialogCount(), 0);
+  assert.equal(app.count('PLAY_ERROR'), 0);
 });

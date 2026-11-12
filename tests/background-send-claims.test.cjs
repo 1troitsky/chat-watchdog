@@ -87,6 +87,18 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }, alarmState = 
         { tab: { id: tabId, url } }, resolve), true);
     });
   }
+  async function claimErrorDialog(incidentKey, tabId = 7, url = "https://chatgpt.com/c/a") {
+    return new Promise(resolve => {
+      assert.equal(onMessage({ type: "CLAIM_ERROR_DIALOG", incidentKey },
+        { tab: { id: tabId, url } }, resolve), true);
+    });
+  }
+  async function releaseErrorDialog(leaseId, tabId = 7, url = "https://chatgpt.com/c/a") {
+    return new Promise(resolve => {
+      assert.equal(onMessage({ type: "RELEASE_ERROR_DIALOG", leaseId },
+        { tab: { id: tabId, url } }, resolve), true);
+    });
+  }
   async function error(tabId = 7, url = "https://chatgpt.com/c/a") {
     return new Promise(resolve => {
       assert.equal(onMessage({ type: "PLAY_ERROR" },
@@ -104,7 +116,7 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }, alarmState = 
       enabled: true, mode: "auto", origin: "https://chatgpt.com", ...overrides
     });
   }
-  return { claim, release, completion, error, state, configure, saved, clock, playback,
+  return { claim, release, claimErrorDialog, releaseErrorDialog, completion, error, state, configure, saved, clock, playback,
     setHealthTabs(value, isReachable) { tabs = value; reachable = isReachable; },
     async runHealthAlarm() { onAlarm({ name: "chat-watchdog-health" });
       for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve)); },
@@ -442,4 +454,38 @@ test("error playback reports offscreen result to the originating content script"
   const disabled = await app.error();
   assert.equal(disabled.ok, false);
   assert.equal(disabled.reason, "inactive-or-error-sounds-disabled");
+});
+
+test('one of ten simultaneous modal claimants wins, with no close action', async () => {
+  const app = createWorker();
+  app.configure();
+  const attempts = await Promise.all(Array.from({length:10}, (_,i) =>
+    app.claimErrorDialog('incident:' + i)));
+  assert.equal(attempts.filter(result => result.ok).length, 1);
+  assert.equal(attempts.filter(result => result.reason === 'dialog-already-open').length, 9);
+  const existing = app.saved.get('watchdog:error-modal:7');
+  assert.equal(typeof existing.leaseId, 'string');
+  assert.equal((await app.releaseErrorDialog('wrong')).reason, 'dialog-lease-mismatch');
+  assert.equal((await app.claimErrorDialog('new-incident')).reason, 'dialog-already-open');
+  assert.equal((await app.releaseErrorDialog(existing.leaseId)).ok, true);
+  assert.equal((await app.claimErrorDialog('new-incident')).ok, true);
+});
+
+test('modal claim is tab-scoped and reset on page reload', async () => {
+  const app = createWorker();
+  app.configure(7); app.configure(8);
+  assert.equal((await app.claimErrorDialog('one', 7)).ok, true);
+  assert.equal((await app.claimErrorDialog('two', 8)).ok, true);
+  assert.equal((await app.claimErrorDialog('another', 7)).ok, false);
+  await app.onUpdated(7, {status:'loading'}, {id:7,url:'https://chatgpt.com/c/a'});
+  for (let i=0;i<10;i++) await Promise.resolve();
+  assert.equal((await app.claimErrorDialog('another', 7)).ok, true);
+});
+
+
+test('modal ownership never expires while the first dialog is still open', async () => {
+  const app = createWorker(); app.configure();
+  assert.equal((await app.claimErrorDialog('first')).ok, true);
+  app.clock.now += 20 * 60 * 1000;
+  assert.equal((await app.claimErrorDialog('second')).reason, 'dialog-already-open');
 });

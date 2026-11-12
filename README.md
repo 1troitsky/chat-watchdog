@@ -1,5 +1,13 @@
 # Chat Watchdog
 
+## 0.2.22 — one active error dialog per tab; errors at reply end only
+
+- A serialized `CLAIM_ERROR_DIALOG` in the background service worker allows **at most one open Watchdog error modal per browser tab**, even if two content-script observers discover the failure at the same time, before either dialog is closed. The tab-wide lease is released when the user closes the dialog or the page navigates; it does not expire while a visible dialog remains open.
+- Error phrases in an assistant response are matched only on the **last nonempty line of the latest reply**. An error marker quoted earlier in a reply no longer creates an alert. Standalone system alerts still work, but large status containers containing chat history and old system paragraphs before the newest user turn are excluded.
+- Modal ownership and rejections are independent of audio and automatic sending; bundled sounds, sending rules, and all three modes are unchanged.
+- New concurrency and marker-order regression tests simulate two independent observers trying to open the same modal *before any dismissal*.
+
+
 ## 0.2.21 — bundled error sound and repeated-dialog hotfix
 
 - Built-in error audio (`sounds/01507.mp3`) now loads as a Blob in the offscreen page, following the same playback path as user-uploaded audio. It falls back to the extension resource URL if fetching the bundled file fails. Playback failures are reported in the diagnostic journal.

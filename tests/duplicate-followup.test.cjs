@@ -157,6 +157,8 @@ function createHarness(options = {}) {
       sendMessage: async (msg) => {
         sentRuntimeMessages.push(msg.type);
         if (msg.type === "GET_SEND_STATE") return { ok: true, lockedUntil: options.lockedUntil || 0 };
+        if (msg.type === "CLAIM_ERROR_DIALOG") return { ok: true, leaseId: "error-lease" };
+        if (msg.type === "RELEASE_ERROR_DIALOG") return { ok: true };
         if (msg.type === "CLAIM_SEND") {
           claimMessages.push(msg);
           if (options.rejectClaimReason)
@@ -204,6 +206,7 @@ function createHarness(options = {}) {
       }
       await flush();
     }
+    await flush();
   }
   async function baseline() {
     await flush(); // GET_CONFIG enables monitoring.
@@ -326,6 +329,7 @@ test("error-only mode still displays the error and triggers the audio event", as
   await chat.baseline();
   chat.setError(true);
   chat.poll();
+  await chat.advance(0);
   assert.equal(chat.sentRuntimeMessages.filter(x => x === "PLAY_ERROR").length, 1);
   await chat.advance(120000);
   chat.poll();
@@ -919,6 +923,7 @@ test('explicit stream failure is recognized even when completion marker is prese
   chat.nextUser(); chat.nextAssistant();
   chat.setAssistantText('!!!ГОТОВО!!!\nОшибка в потоке сообщений.');
   chat.poll();
+  await chat.advance(0);
   assert.equal(chat.sentRuntimeMessages.filter(x => x === 'PLAY_ERROR').length, 1);
   assert.equal(chat.clicks(), 0);
 });
@@ -932,6 +937,7 @@ test('optional missing-marker alert triggers once only after response stabilizes
   assert.equal(chat.sentRuntimeMessages.filter(x => x === 'PLAY_ERROR').length, 0);
   await chat.advance(12000);
   chat.poll();
+  await chat.advance(0);
   assert.equal(chat.sentRuntimeMessages.filter(x => x === 'PLAY_ERROR').length, 1);
   await chat.advance(60000);
   chat.poll();

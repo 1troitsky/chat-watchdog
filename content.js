@@ -19,6 +19,9 @@
   let lastClaimedAssistantOrdinal = 0;
   let dialogRoot = null;
   let dialogError = null;
+  let dialogLeaseId = null;
+  let dialogClaimPending = false;
+  let dialogEpoch = 0;
   // An error can temporarily disappear during ChatGPT DOM reconciliation.
   // Acknowledgement is per user turn and phrase, NOT a 2.5-second timeout:
   // otherwise one error can reopen repeatedly after a single dismissal.
@@ -354,9 +357,9 @@
     const message = "Ответ завершился без маркера «" + config.marker + "» (возможен обрыв)";
     recordEvent("error", message);
     if (dialogRoot) dialogError.textContent = message;
-    else if (showDialog(message)) {
-      playErrorSound();
-    }
+    else showDialog(message).then(opened => {
+      if (opened) playErrorSound();
+    });
   }
 
   function messageKey(node, count, text) {
@@ -430,6 +433,12 @@
   }
 
   function closeDialog() {
+    dialogEpoch++;
+    const leaseId = dialogLeaseId;
+    dialogLeaseId = null;
+    if (leaseId) {
+      chrome.runtime.sendMessage({ type: "RELEASE_ERROR_DIALOG", leaseId }).catch(() => {});
+    }
     if (dialogRoot) {
       for (const key of visibleErrorIncidents) acknowledgeError(key);
       if (activeDialogIncidentKey) acknowledgeError(activeDialogIncidentKey);
@@ -453,21 +462,33 @@
     }
   }
 
-  function showDialog(message, incidentKey = errorIncidentKey(message)) {
-    if (isErrorAcknowledged(incidentKey)) return false;
-    if (dialogRoot) {
-      if (query("#chat-watchdog-alert-host").includes(dialogRoot)) {
-        dialogError.textContent = message;
-        return false;
-      }
-      // A previous owner removed our host; discard the stale local pointer.
-      dialogRoot = null;
-      dialogError = null;
+  async function showDialog(message, incidentKey = errorIncidentKey(message)) {
+    if (isErrorAcknowledged(incidentKey) || dialogClaimPending) return false;
+    // This permission is serialized by the extension worker across ALL
+    // observers/frames in this tab, not just the current document.
+    const epoch = dialogEpoch;
+    const targetRoute = route;
+    dialogClaimPending = true;
+    let claim;
+    try {
+      claim = await chrome.runtime.sendMessage({ type: "CLAIM_ERROR_DIALOG", incidentKey });
+    } catch (error) {
+      recordEvent("blocked", "Не удалось проверить доступность окна ошибки: " + String(error));
+      return false;
+    } finally { dialogClaimPending = false; }
+    if (!claim?.ok) return false;
+    const release = () => chrome.runtime.sendMessage({
+      type: "RELEASE_ERROR_DIALOG", leaseId: claim.leaseId
+    }).catch(() => {});
+    if (epoch !== dialogEpoch || targetRoute !== route || !config.enabled ||
+        config.mode === "continue" || isErrorAcknowledged(incidentKey) ||
+        query("#chat-watchdog-alert-host").length || dialogRoot) {
+      release();
+      return false;
     }
-    // A content-script reinjection or second extension copy has a different
-    // JS closure. The DOM, unlike dialogRoot, is shared by both. Only one
-    // modal is allowed per page; don't play a second alarm for it either.
-    if (query("#chat-watchdog-alert-host").length) return false;
+    dialogLeaseId = claim.leaseId;
+    // The tab-wide claim was granted; the page-wide DOM check above also
+    // protects against older injected scripts using the same dialog host ID.
     const host = document.createElement("div");
     host.id = "chat-watchdog-alert-host";
     host.style.cssText = "position:fixed;inset:0;z-index:2147483647;";
@@ -548,8 +569,22 @@
     const matches = [];
     for (const node of query(selector)) {
       if (!visible(node) || isWatchdogUi(node)) continue;
-      const rawText = textOf(node).slice(0, 1000);
-      const matched = Core.findError(rawText, config.errorWords);
+      // Do not search for substrings in the entire chat/history or an alert
+      // wrapper containing unrelated content. Only an explicit final error
+      // line within a standalone system notification is eligible.
+      if (typeof node.closest === "function" && node.closest(
+        '[data-user-message-bubble], [data-message-author-role="user"], ' +
+        '[data-message-author-role="assistant"], [data-turn-key], ' +
+        '[contenteditable], [data-composer-input], #chat-watchdog-alert-host'
+      )) continue;
+      // Some 2026 ChatGPT app shells put role=status on a large container
+      // holding chat history. It is not an independent system notification.
+      if (typeof node.querySelector === "function" && node.querySelector(
+        '[data-user-message-bubble], [data-message-author-role], [data-turn-key], ' +
+        '[data-content-search-unit-key]'
+      )) continue;
+      const rawText = textOf(node).slice(-1000);
+      const matched = Core.findErrorLine(rawText, config.errorWords);
       if (!matched) continue;
       const target = specificErrorNode(node, matched);
       const signature = matched + ":" + textOf(target).slice(0, 500);
@@ -558,8 +593,11 @@
     // ChatGPT sometimes renders transport failures in an ordinary paragraph,
     // not a role=alert toast. Inspect only standalone known SYSTEM error lines
     // and exclude user/assistant chat bubbles and the composer.
+    const currentUser = latestUserTurn().node;
     for (const node of query('p, [role="paragraph"], [data-testid*="error"]')) {
       if (!visible(node) || isWatchdogUi(node)) continue;
+      // A system paragraph from a previous answer is no longer current.
+      if (currentUser && !followsUser(node, currentUser)) continue;
       if (typeof node.closest === "function" && node.closest(
         '[data-user-message-bubble], [data-message-author-role="user"], ' +
         '[data-message-author-role="assistant"], [data-turn-key], ' +
@@ -599,8 +637,10 @@
       recordEvent("error", "Ошибка: " + fresh.phrase);
       if (dialogRoot) {
         dialogError.textContent = "Обнаружена ошибка: " + fresh.phrase;
-      } else if (showDialog(fresh.phrase)) {
-        playErrorSound();
+      } else {
+        showDialog(fresh.phrase).then(opened => {
+          if (opened) playErrorSound();
+        });
       }
     }
     return assistantErrorActive || matches.length > 0;

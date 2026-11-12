@@ -293,3 +293,11 @@ test('missing-marker alert is strictly opt-in, marker matches start or end', () 
   assert.equal(Core.completionMatches('!!!ГОТОВО!!!\nТекст', '!!!ГОТОВО!!!'), true);
   assert.equal(Core.completionMatches('Текст без маркера', '!!!ГОТОВО!!!'), false);
 });
+
+test('only trailing error marker counts; an earlier marker inside the answer does not', () => {
+  const markers = '!!!У НАС ПРОБЛЕМА!!!\nОшибка в потоке сообщений';
+  assert.equal(Core.findErrorLine('!!!У НАС ПРОБЛЕМА!!!\n!!!ГОТОВО!!!', markers), null);
+  assert.equal(Core.findErrorLine('!!!ГОТОВО!!!\n!!!У НАС ПРОБЛЕМА!!!', markers), '!!!У НАС ПРОБЛЕМА!!!');
+  assert.equal(Core.findErrorLine('Один абзац.\nОшибка в потоке сообщений.\nРабота продолжена.', markers), null);
+  assert.equal(Core.findErrorLine('История\nОшибка в потоке сообщений.\n\n', markers), 'Ошибка в потоке сообщений');
+});

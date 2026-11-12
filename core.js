@@ -141,19 +141,24 @@
   // Standalone error markers in assistant replies are alerts; mention of a
   // phrase inside a paragraph should not trigger an alarm.
   function findErrorLine(text, phrases) {
-    const lines = String(text || "").split(/\r?\n/).map(line => line.trim().toLocaleLowerCase());
+    // Only the LAST non-empty line of the currently active assistant reply is
+    // an error marker. Mentioning an error earlier in a long response (or
+    // placing !!!ГОТОВО!!! after it) must not raise an alarm.
+    const lines = String(text || "").split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    const line = (lines[lines.length - 1] || "").toLocaleLowerCase();
+    if (!line || line.length > 500) return null;
     return String(phrases || "").split(/\r?\n/)
       .map(phrase => phrase.trim())
       .filter(Boolean)
-      .find(phrase => lines.some(line => {
+      .find(phrase => {
         const needle = phrase.toLocaleLowerCase();
         if (line === needle || line.replace(/[.!?。]+$/, "") === needle.replace(/[.!?。]+$/, ""))
           return true;
-        // A few known system errors append recovery instructions to a
-        // standard prefix. Do not generalize this to user-defined phrases.
+        // Two known system errors may append their recovery instructions.
         return SYSTEM_ERROR_PREFIXES.slice(0, 2).some(prefix =>
-          prefix.toLocaleLowerCase() === needle && line.startsWith(needle));
-      })) || null;
+          prefix.toLocaleLowerCase() === needle &&
+          (line.startsWith(needle + " ") || line.startsWith(needle + ".") || line.startsWith(needle + ",")));
+      }) || null;
   }
 
   function findSystemErrorLine(text, phrases) {

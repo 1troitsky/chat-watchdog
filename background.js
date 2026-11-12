@@ -6,6 +6,55 @@ const key = (tabId) => "tab:" + tabId;
 const audioEpochs = new Map();
 const completionQueues = new Map();
 const sendClaimQueues = new Map();
+// Serialized, tab-wide ownership of the error modal. A DOM ID alone cannot
+// arbitrate between independent extension content-script contexts/frames.
+const dialogClaimQueues = new Map();
+const dialogLeaseKey = tabId => "watchdog:error-modal:" + tabId;
+let nextDialogLease = 0;
+
+async function withDialogLock(tabId, task) {
+  const prev = dialogClaimQueues.get(tabId) || Promise.resolve();
+  const next = prev.catch(() => {}).then(task);
+  dialogClaimQueues.set(tabId, next);
+  try { return await next; }
+  finally { if (dialogClaimQueues.get(tabId) === next) dialogClaimQueues.delete(tabId); }
+}
+
+async function claimErrorDialog(tabId, sender, incidentKey) {
+  if (typeof incidentKey !== "string" || !incidentKey || incidentKey.length > 2048 ||
+      !sender.tab?.url) return { ok: false, reason: "invalid-dialog-claim" };
+  return withDialogLock(tabId, async () => {
+    const leaseKey = dialogLeaseKey(tabId);
+    const state = await chrome.storage.session.get([key(tabId), leaseKey]);
+    const config = state[key(tabId)];
+    if (!config?.enabled || config.mode === "continue" ||
+        new URL(sender.tab.url).origin !== config.origin)
+      return { ok: false, reason: "dialog-monitor-inactive" };
+    const old = state[leaseKey];
+    // Do NOT expire an open modal on a timer: a user may leave it visible
+    // for longer than ten minutes. Ownership ends only on close/reload.
+    if (old && old.origin === config.origin)
+      return { ok: false, reason: "dialog-already-open" };
+    const leaseId = tabId + ":" + Date.now() + ":" + (++nextDialogLease) + ":" + Math.random();
+    await chrome.storage.session.set({ [leaseKey]: {
+      leaseId, origin: config.origin, incidentKey, createdAt: Date.now()
+    } });
+    return { ok: true, leaseId };
+  });
+}
+
+async function releaseErrorDialog(tabId, sender, leaseId) {
+  if (!leaseId || !sender.tab?.url) return { ok: false, reason: "invalid-dialog-release" };
+  return withDialogLock(tabId, async () => {
+    const leaseKey = dialogLeaseKey(tabId);
+    const value = (await chrome.storage.session.get(leaseKey))[leaseKey];
+    if (!value || value.leaseId !== leaseId ||
+        value.origin !== new URL(sender.tab.url).origin)
+      return { ok: false, reason: "dialog-lease-mismatch" };
+    await chrome.storage.session.remove(leaseKey);
+    return { ok: true };
+  });
+}
 const healthAlarmName = "chat-watchdog-health";
 let healthScanning = false;
 let nextSendLease = 0;
@@ -276,6 +325,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (!sender.tab || !Number.isInteger(sender.tab.id)) return false;
   const tabId = sender.tab.id;
+  if (message.type === "CLAIM_ERROR_DIALOG") {
+    claimErrorDialog(tabId, sender, message.incidentKey).then(sendResponse)
+      .catch(() => sendResponse({ ok: false, reason: "dialog-storage-error" }));
+    return true;
+  }
+  if (message.type === "RELEASE_ERROR_DIALOG") {
+    releaseErrorDialog(tabId, sender, message.leaseId).then(sendResponse)
+      .catch(() => sendResponse({ ok: false, reason: "dialog-storage-error" }));
+    return true;
+  }
   if (message.type === "CLAIM_SEND") {
     claimSend(tabId, message.token, message.assistantOrdinal, sender,
       message.userTurnKey, message.assistantStable)
@@ -345,6 +404,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
   if (info.status === "loading") {
+    // A navigation destroys the old modal even without its close event.
+    withDialogLock(tabId, () => chrome.storage.session.remove(dialogLeaseKey(tabId)))
+      .catch(console.warn);
     stopTabAudio(tabId).catch(console.warn);
     return;
   }
@@ -371,7 +433,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   stopTabAudio(tabId).catch(() => {});
   // Keep the shared conversation ledger while another tab may be open.
-  chrome.storage.session.remove(key(tabId)).catch(() => {});
+  chrome.storage.session.remove([key(tabId), dialogLeaseKey(tabId)]).catch(() => {});
   ChatWatchdogAudio.remove(tabId).catch(() => {});
   ChatWatchdogAudio.remove(tabId, "completion").catch(() => {});
   audioEpochs.delete(tabId + ":error");

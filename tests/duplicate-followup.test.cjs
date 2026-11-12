@@ -26,6 +26,7 @@ function createHarness(options = {}) {
   let stopVisible = false;
   let stopClicks = 0;
   let claimsMade = 0;
+  const claimMessages = [];
   const jobs = new Map();
 
   function userNode(text, afterReplyId = 0) {
@@ -157,6 +158,9 @@ function createHarness(options = {}) {
         sentRuntimeMessages.push(msg.type);
         if (msg.type === "GET_SEND_STATE") return { ok: true, lockedUntil: options.lockedUntil || 0 };
         if (msg.type === "CLAIM_SEND") {
+          claimMessages.push(msg);
+          if (options.rejectClaimReason)
+            return { ok: false, reason: options.rejectClaimReason };
           if (claims.has(msg.token)) return { ok: false, reason: "duplicate" };
           claims.add(msg.token);
           claimsMade++;
@@ -226,9 +230,10 @@ function createHarness(options = {}) {
   return {
     advance, baseline, poll, sendFirst, diagnose,
     clicks: () => clicks,
-    claimsMade: () => claimsMade,
+    claimsMade: () => claimsMade, claimMessages,
     nextUser() { userMessages.push(userNode("Ок, продолжаем", replyId)); },
     nextAssistant() { replyId++; response = assistantNode(); assistantHistory.push(response); },
+    virtualizeNextAssistant() { replyId++; response = assistantNode(); assistantHistory[assistantHistory.length - 1] = response; },
     rerenderOldTurn() {
       userMessages = userMessages.map(item => userNode(item.innerText, item.afterReplyId));
       response = assistantNode();
@@ -893,4 +898,45 @@ test('missing marker is never an error by default', async () => {
   await chat.advance(30000);
   chat.poll();
   assert.equal(chat.sentRuntimeMessages.filter(x => x === 'PLAY_ERROR').length, 0);
+});
+
+
+test("a fresh reply at a recycled assistant ordinal sends after prior success", async () => {
+  const chat = createHarness();
+  await chat.sendFirst();
+  chat.nextUser();
+  chat.virtualizeNextAssistant(); // DOM replaced its old assistant slot: ordinal remains one.
+  await chat.advance(46000);
+  chat.poll();
+  await chat.advance(1600);
+  chat.poll();
+  await chat.advance(5000);
+  await chat.advance(250);
+  assert.equal(chat.clicks(), 2, "new stable reply identity must override recycled ordinal");
+  assert.equal(chat.claimMessages[0].assistantOrdinal, chat.claimMessages[1].assistantOrdinal);
+  assert.equal(chat.claimMessages[0].assistantStable, true);
+  assert.equal(chat.claimMessages[1].assistantStable, true);
+  assert.notEqual(chat.claimMessages[0].userTurnKey, chat.claimMessages[1].userTurnKey);
+});
+
+test("background rejection reason is logged, and stops after exactly five attempts", async () => {
+  const chat = createHarness({ rejectClaimReason: "assistant-already-handled" });
+  await chat.baseline();
+  chat.poll();
+  await chat.advance(1600);
+  chat.poll();
+  for (let n = 0; n < 60 && chat.claimMessages.length < 5; n++) {
+    await chat.advance(1000);
+    chat.poll();
+  }
+  await chat.advance(1000);
+  chat.poll();
+  assert.equal(chat.clicks(), 0);
+  assert.equal(chat.claimMessages.length, 5);
+  assert.equal(chat.diagnose().lastClaimRejectReason, "assistant-already-handled");
+  assert.equal(chat.diagnose().pending, false);
+  await chat.advance(100000);
+  for (let n = 0; n < 4; n++) chat.poll();
+  assert.equal(chat.claimMessages.length, 5);
+  assert.equal(chat.diagnose().enabled, true);
 });

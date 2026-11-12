@@ -10,9 +10,14 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }) {
   let onMessage;
   let onUpdated;
   let onRemoved;
+  let onAlarm;
+  const healthEvents = [];
+  let tabs = [];
+  let reachable = true;
   const session = {
     async get(keys) {
-      const requested = typeof keys === "string" ? [keys] : keys;
+      const requested = keys == null ? [...saved.keys()] :
+        (typeof keys === "string" ? [keys] : keys);
       return Object.fromEntries(requested
         .filter(key => saved.has(key))
         .map(key => [key, saved.get(key)]));
@@ -35,9 +40,17 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }) {
     offscreen: { createDocument: async () => {} },
     tabs: {
       onUpdated: { addListener(fn) { onUpdated = fn; } },
-      onRemoved: { addListener(fn) { onRemoved = fn; } }
+      onRemoved: { addListener(fn) { onRemoved = fn; } },
+      query: async () => tabs,
+      sendMessage: async (tabId, message) => {
+        healthEvents.push(message.type);
+        if (!reachable) throw new Error("content script unavailable");
+        return { ok: true, enabled: true };
+      }
     },
-    storage: { session }
+    storage: { session },
+    alarms: { onAlarm: { addListener(fn) { onAlarm = fn; } }, create: async () => {} },
+    scripting: { async executeScript() { reachable = true; healthEvents.push("inject"); } }
   };
   vm.runInNewContext(background, {
     chrome, URL, Map, Promise,
@@ -51,10 +64,10 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }) {
         { tab: { id: tabId, url } }, resolve), true);
     });
   }
-  async function claim(token, tabId = 7, url = "https://chatgpt.com/c/a", assistantOrdinal = 1) {
+  async function claim(token, tabId = 7, url = "https://chatgpt.com/c/a", assistantOrdinal = 1, userTurnKey = null, assistantStable = false) {
     return new Promise(resolve => {
       const listening = onMessage(
-        { type: "CLAIM_SEND", token, assistantOrdinal },
+        { type: "CLAIM_SEND", token, assistantOrdinal, userTurnKey, assistantStable },
         { tab: { id: tabId, url } },
         resolve
       );
@@ -79,6 +92,10 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }) {
     });
   }
   return { claim, release, completion, state, configure, saved, clock, playback,
+    setHealthTabs(value, isReachable) { tabs = value; reachable = isReachable; },
+    async runHealthAlarm() { onAlarm({ name: "chat-watchdog-health" });
+      for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve)); },
+    healthEvents,
     get onUpdated() { return onUpdated; }, get onRemoved() { return onRemoved; } };
 }
 
@@ -279,4 +296,93 @@ test('releasing a second claim restores earlier committed cooldown and ordinal',
   assert.equal(ledger.maxAssistantOrdinal, 1);
   assert.equal((await app.claim('already-sent')).reason, 'duplicate');
   assert.equal((await app.claim('different', 7, 'https://chatgpt.com/c/a', 2)).ok, true);
+});
+
+
+test("new stable assistant after a new user turn survives DOM ordinal virtualization", async () => {
+  const saved = new Map();
+  const app = createWorker(saved);
+  app.configure();
+  const first = await app.claim("chat|assistant:old", 7, "https://chatgpt.com/c/a", 4,
+    "4:14:fingerprint-old", true);
+  assert.equal(first.ok, true);
+  app.clock.now += 31000;
+  const second = await app.claim("chat|assistant:new", 7, "https://chatgpt.com/c/a", 4,
+    "5:14:fingerprint-new", true);
+  assert.equal(second.ok, true, "new response may have the same rendered ordinal");
+  const ledger = saved.get("watchdog:conversation:https://chatgpt.com/c/a");
+  assert.equal(ledger.maxAssistantOrdinal, 4);
+  assert.equal(ledger.userTurns.length, 2);
+});
+
+test("new DOM assistant ID cannot resubmit the SAME user turn, even after cooldown", async () => {
+  const app = createWorker();
+  app.configure();
+  assert.equal((await app.claim("chat|assistant:a", 7, "https://chatgpt.com/c/a", 4,
+    "5:14:user", true)).ok, true);
+  app.clock.now += 90000;
+  assert.equal((await app.claim("chat|assistant:rerender", 7, "https://chatgpt.com/c/a", 4,
+    "5:14:user", true)).reason, "user-turn-already-handled");
+  assert.equal((await app.claim("chat|assistant:a", 7, "https://chatgpt.com/c/a", 5,
+    "6:14:new-user", true)).reason, "duplicate");
+});
+
+test("older ledger ordinal collision can migrate after a new identified turn", async () => {
+  const saved = new Map();
+  const app = createWorker(saved); app.configure();
+  saved.set("watchdog:conversation:https://chatgpt.com/c/a", {
+    origin: "https://chatgpt.com", tokens: ["chat|assistant:old"],
+    maxAssistantOrdinal: 4, lockedUntil: 900000, lastClaimAt: 800000
+  });
+  app.clock.now = 1000000;
+  assert.equal((await app.claim("chat|assistant:new", 7, "https://chatgpt.com/c/a", 4,
+    "5:14:user", true)).ok, true);
+});
+
+test("ID-less or absent user identity still uses conservative ordinal protection", async () => {
+  const app = createWorker(); app.configure();
+  assert.equal((await app.claim("first", 7, "https://chatgpt.com/c/a", 4)).ok, true);
+  app.clock.now += 90000;
+  assert.equal((await app.claim("second", 7, "https://chatgpt.com/c/a", 4,
+    "different-user", false)).reason, "assistant-already-handled");
+  assert.equal((await app.claim("third", 7, "https://chatgpt.com/c/a", 4,
+    null, true)).reason, "assistant-already-handled");
+});
+
+test("un-clicked claim releases user-turn lock without leaking duplicate permission", async () => {
+  const app = createWorker(); app.configure();
+  const first = await app.claim("first", 7, "https://chatgpt.com/c/a", 4,
+    "5:14:user", true);
+  assert.equal(first.ok, true);
+  assert.equal((await app.release("first", first.leaseId)).ok, true);
+  const second = await app.claim("second", 7, "https://chatgpt.com/c/a", 4,
+    "5:14:user", true);
+  assert.equal(second.ok, true);
+});
+
+
+test("one-minute health scan wakes a live observer but does not reinject it", async () => {
+  const app = createWorker(); app.configure();
+  app.setHealthTabs([{ id: 7, url: "https://chatgpt.com/c/a" }], true);
+  await app.runHealthAlarm();
+  assert.deepEqual(app.healthEvents, ["WATCHDOG_HEALTH"]);
+});
+
+test("a missing observer is re-injected without page refresh", async () => {
+  const app = createWorker(); app.configure();
+  app.setHealthTabs([{ id: 7, url: "https://chatgpt.com/c/a" }], false);
+  await app.runHealthAlarm();
+  assert.deepEqual(app.healthEvents,
+    ["WATCHDOG_HEALTH", "inject", "WATCHDOG_CONFIG"]);
+});
+
+test("health checks never touch disabled or cross-origin tabs", async () => {
+  const app = createWorker(); app.configure(7, { enabled: false });
+  app.configure(8);
+  app.setHealthTabs([
+    { id: 7, url: "https://chatgpt.com/c/a" },
+    { id: 8, url: "https://example.com/c/a" }
+  ], false);
+  await app.runHealthAlarm();
+  assert.equal(app.healthEvents.length, 0);
 });

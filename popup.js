@@ -158,6 +158,9 @@
         "Номер текущего ответа: " + result.assistantOrdinal,
         "Последний ответ обработчика: " + result.lastClaimedAssistantOrdinal,
         "Последний ответ по беседе: " + (ledger?.maxAssistantOrdinal || 0),
+        "Последний отказ фоновой защиты: " + (result.lastClaimRejectReason || "нет"),
+        "Номер ответа при отказе: " + (result.lastClaimRejectOrdinal ?? "нет"),
+        "Отправленных ходов пользователя в журнале: " + (ledger?.userTurns?.length || 0),
         "Запросов в журнале беседы: " + (ledger?.tokens?.length || 0),
         "Вкладок с этой беседой: " + chatTabs.length,
         "Версия: " + chrome.runtime.getManifest().version +
@@ -184,7 +187,10 @@
         "Без маркера = ошибка: " + (result.missingMarkerError ? "ДА" : "НЕТ"),
         "Предупреждений об отсутствии маркера: " + (result.missingMarkerAlerts || 0),
         "Последняя проверка: " + (result.lastMonitorCheckAt ? new Date(result.lastMonitorCheckAt).toLocaleTimeString("ru-RU") : "нет"),
-        "Срабатываний будильника после паузы: " + (result.cooldownWakeCount || 0)
+        "Срабатываний будильника после паузы: " + (result.cooldownWakeCount || 0),
+        "Проверок здоровья монитора: " + (result.healthWakeCount || 0),
+        "Последний сигнал от фона: " + (result.lastHealthWakeAt ?
+          new Date(result.lastHealthWakeAt).toLocaleTimeString("ru-RU") : "нет")
       ].join("\n");
       output.textContent = diagnostic;
       return diagnostic;

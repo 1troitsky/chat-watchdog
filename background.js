@@ -6,6 +6,8 @@ const key = (tabId) => "tab:" + tabId;
 const audioEpochs = new Map();
 const completionQueues = new Map();
 const sendClaimQueues = new Map();
+const healthAlarmName = "chat-watchdog-health";
+let healthScanning = false;
 let nextSendLease = 0;
 // Scope to the conversation, not the tab: the same chat can be open twice.
 const conversationKey = url => {
@@ -23,7 +25,7 @@ function nextAudioEpoch(tabId, kind = "error") {
 
 // Atomic per-tab claims across all injected scripts. The ledger survives
 // service-worker suspension and content-script reinjection during this session.
-async function claimSend(tabId, token, assistantOrdinal, sender) {
+async function claimSend(tabId, token, assistantOrdinal, sender, userTurnKey, assistantStable) {
   if (typeof token !== "string" || !token || token.length > 2048 ||
       !Number.isSafeInteger(assistantOrdinal) ||
       assistantOrdinal < 1 || assistantOrdinal > 1000000) {
@@ -46,8 +48,20 @@ async function claimSend(tabId, token, assistantOrdinal, sender) {
     const seen = prior && prior.origin === config.origin && Array.isArray(prior.tokens) ?
       prior.tokens : [];
     if (seen.includes(token)) return { ok: false, reason: "duplicate" };
-    // A replaced DOM turn ID cannot re-open an already processed reply.
-    if (prior && prior.origin === config.origin &&
+    // Assistant ordinal is only the position in the *currently rendered* DOM.
+    // ChatGPT can virtualize older turns, so a genuinely new reply can reuse
+    // an ordinal. A stable assistant ID PLUS a distinct logical user turn is
+    // stronger evidence than the (possibly recycled) ordinal.
+    const identified = assistantStable === true &&
+      typeof userTurnKey === "string" && userTurnKey.length > 0 &&
+      userTurnKey.length <= 1024;
+    const knownUserTurns = prior && prior.origin === config.origin &&
+      Array.isArray(prior.userTurns) ? prior.userTurns : [];
+    if (identified && knownUserTurns.includes(userTurnKey))
+      return { ok: false, reason: "user-turn-already-handled" };
+    // Keep the ordinal guard for older clients, ID-less replies, and pages
+    // where there is no identifiable user turn (fail closed, no duplicates).
+    if (!identified && prior && prior.origin === config.origin &&
         Number.isSafeInteger(prior.maxAssistantOrdinal) &&
         assistantOrdinal <= prior.maxAssistantOrdinal) {
       return { ok: false, reason: "assistant-already-handled",
@@ -78,11 +92,14 @@ async function claimSend(tabId, token, assistantOrdinal, sender) {
       [scope]: {
         origin: config.origin, tokens: [...seen.slice(-499), token],
         lastClaimAt: now, lockedUntil: now + minIntervalMs,
-        maxAssistantOrdinal: assistantOrdinal, leaseId, leaseTabId: tabId,
+        maxAssistantOrdinal: Math.max(prior?.maxAssistantOrdinal || 0, assistantOrdinal),
+        userTurns: identified ? [...knownUserTurns.filter(t => t !== userTurnKey).slice(-499), userTurnKey] : knownUserTurns,
+        leaseId, leaseTabId: tabId,
         leaseToken: token,
         previousLastClaimAt: prior?.lastClaimAt || 0,
         previousLockedUntil: prior?.lockedUntil || 0,
-        previousMaxAssistantOrdinal: prior?.maxAssistantOrdinal || 0
+        previousMaxAssistantOrdinal: prior?.maxAssistantOrdinal || 0,
+        previousUserTurns: knownUserTurns
       }
     });
     return { ok: true, lockedUntil: now + minIntervalMs, leaseId };
@@ -113,7 +130,8 @@ async function releaseUnclickedSend(tabId, token, leaseId, sender) {
       tokens: ledger.tokens.filter(value => value !== token),
       lastClaimAt: ledger.previousLastClaimAt,
       lockedUntil: ledger.previousLockedUntil,
-      maxAssistantOrdinal: ledger.previousMaxAssistantOrdinal
+      maxAssistantOrdinal: ledger.previousMaxAssistantOrdinal,
+      userTurns: Array.isArray(ledger.previousUserTurns) ? ledger.previousUserTurns : []
     };
     await chrome.storage.session.set({ [scope]: restored });
     return { ok: true, lockedUntil: restored.lockedUntil };
@@ -192,6 +210,50 @@ async function playCompletionOnce(tabId, sender, token) {
   finally { if (completionQueues.get(sessionKey) === task) completionQueues.delete(sessionKey); }
 }
 
+// Recover a content script that never initialized (e.g. worker temporarily
+// unavailable during GET_CONFIG). A live observer is only nudged to check;
+// it is never re-injected, reset or duplicated.
+async function scanEnabledTabs() {
+  if (healthScanning) return;
+  healthScanning = true;
+  try {
+    const all = await chrome.storage.session.get(null);
+    const tabs = await chrome.tabs.query({});
+    for (const tab of tabs) {
+      const saved = all[key(tab.id)];
+      if (!saved?.enabled || !tab.url || tab.discarded) continue;
+      let origin;
+      try { origin = new URL(tab.url).origin; } catch { continue; }
+      if (origin !== saved.origin) continue;
+      try {
+        const reply = await chrome.tabs.sendMessage(tab.id, { type: "WATCHDOG_HEALTH" });
+        if (reply?.ok && reply.enabled) continue;
+        if (reply?.ok) {
+          await chrome.tabs.sendMessage(tab.id, { type: "WATCHDOG_CONFIG", config: saved });
+          continue;
+        }
+      } catch { /* No responding content script: try injecting it. */ }
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id }, files: ["core.js", "content.js"]
+        });
+        await chrome.tabs.sendMessage(tab.id, { type: "WATCHDOG_CONFIG", config: saved });
+      } catch (error) {
+        console.warn("Chat Watchdog recovery:", error);
+      }
+    }
+  } catch (error) {
+    console.warn("Chat Watchdog health scan:", error);
+  } finally { healthScanning = false; }
+}
+
+if (chrome.alarms?.create && chrome.alarms?.onAlarm) {
+  chrome.alarms.onAlarm.addListener(alarm => {
+    if (alarm.name === healthAlarmName) scanEnabledTabs().catch(console.warn);
+  });
+  chrome.alarms.create(healthAlarmName, { periodInMinutes: 1 }).catch(console.warn);
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message) return false;
   // The popup sends this when switching OFF, even when the content script is unavailable.
@@ -204,7 +266,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!sender.tab || !Number.isInteger(sender.tab.id)) return false;
   const tabId = sender.tab.id;
   if (message.type === "CLAIM_SEND") {
-    claimSend(tabId, message.token, message.assistantOrdinal, sender)
+    claimSend(tabId, message.token, message.assistantOrdinal, sender,
+      message.userTurnKey, message.assistantStable)
       .then(sendResponse)
       .catch(() => sendResponse({ ok: false, reason: "storage-error" }));
     return true;

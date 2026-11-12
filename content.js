@@ -36,6 +36,8 @@
   const attemptsByAssistant = new Map();
   const exhaustedAssistantTokens = new Set();
   let watchdogDraft = null;
+  let lastClaimRejectReason = null;
+  let lastClaimRejectOrdinal = null;
   let configRevision = 0;
   // Completion alerts use a separate stable-turn key and are evaluated before
   // the auto-send cooldown / error modes. They never depend on the marker.
@@ -54,6 +56,8 @@
   let cooldownWakeCount = 0;
   let lastMonitorCheckAt = 0;
   let monitorCheckCount = 0;
+  let healthWakeCount = 0;
+  let lastHealthWakeAt = 0;
 
   function query(selector) {
     if (!selector) return [];
@@ -189,6 +193,13 @@
     // must NOT turn an old reply into a new send opportunity.
     return route + "|assistant-fallback:" +
       Core.userTurnFingerprint(count || 0, text);
+  }
+
+  function ordinalAlreadyHandled(ordinal, token) {
+    // A stable assistant identity survives ChatGPT's virtualized DOM. Only
+    // apply the ordinal guard to old layouts without stable message IDs.
+    return !token.includes("|assistant:") &&
+      ordinal <= lastClaimedAssistantOrdinal;
   }
 
   function completionTurnKey(result) {
@@ -703,7 +714,7 @@
       autoDecision("Отправка отменена: ответ ИИ изменился за время ожидания");
       return;
     }
-    if (result.ordinal <= lastClaimedAssistantOrdinal ||
+    if (ordinalAlreadyHandled(result.ordinal, assistantToken) ||
         submittedAssistantTokens.has(assistantToken) ||
         sendGuard.alreadySent(text, latestUserTurn().logicalTurn)) {
       autoDecision("Отправка отменена: ответ уже обработан");
@@ -805,11 +816,13 @@
         // preventing another content-script instance from sending as well.
         const token = sendToken(current.node, text, current.count);
         if (submittedAssistantTokens.has(token) ||
-            current.ordinal <= lastClaimedAssistantOrdinal) return;
+            ordinalAlreadyHandled(current.ordinal, token)) return;
         let claim;
         try {
           claim = await chrome.runtime.sendMessage({
-            type: "CLAIM_SEND", token, assistantOrdinal: current.ordinal
+            type: "CLAIM_SEND", token, assistantOrdinal: current.ordinal,
+            userTurnKey: userTurn,
+            assistantStable: token.includes("|assistant:")
           });
         } catch (error) {
           recordEvent("blocked", "Отправка отменена: нет подтверждения защиты от дублей");
@@ -818,9 +831,15 @@
         if (!claim || !claim.ok) {
           if (claim && Number.isFinite(claim.lockedUntil))
             globalLockedUntil = Math.max(globalLockedUntil, claim.lockedUntil);
-          recordEvent("blocked", claim && claim.reason === "cooldown" ?
-            "Глобальная пауза: ещё " + claim.retryAfterSeconds + " с" :
-            "Повторная отправка заблокирована");
+          lastClaimRejectReason = claim?.reason || "unknown";
+          lastClaimRejectOrdinal = current.ordinal;
+          if (claim?.reason === "cooldown") {
+            recordEvent("blocked", "Глобальная пауза: ещё " +
+              claim.retryAfterSeconds + " с");
+            armCooldownWake();
+          } else {
+            failed("Фоновая защита отклонила отправку (" + lastClaimRejectReason + ")");
+          }
           return;
         }
         globalLockedUntil = Math.max(globalLockedUntil,
@@ -971,7 +990,7 @@
       return;
     }
     if (handled.has(key) || sending ||
-      result.ordinal <= lastClaimedAssistantOrdinal ||
+      ordinalAlreadyHandled(result.ordinal, sendToken(result.node, text, result.count)) ||
       submittedAssistantTokens.has(sendToken(result.node, text, result.count)) ||
       !Core.completionMatches(text, config.marker, config.markerRegex) ||
       sendGuard.alreadySent(text, latestUserTurn().logicalTurn)) return;
@@ -1041,6 +1060,7 @@
       logicalUserTurnDetected: !!latestUserTurn().logicalTurn,
       sendClicks,
       rememberedAssistantReplies: submittedAssistantTokens.size,
+      lastClaimRejectReason, lastClaimRejectOrdinal,
       assistantOrdinal: latestAssistant(selectors.assistant).ordinal,
       lastClaimedAssistantOrdinal,
       cooldownRemainingSeconds: Math.ceil(cooldownRemainingMs() / 1000),
@@ -1060,6 +1080,7 @@
       stopButtonVisible: hasStopButton(selectors.stop),
       pending: !!pending,
       monitorCheckCount,
+      healthWakeCount, lastHealthWakeAt,
       lastMonitorCheckAt,
       monitorCheckAgeSeconds: lastMonitorCheckAt ?
         Math.floor((Date.now() - lastMonitorCheckAt) / 1000) : null,
@@ -1083,6 +1104,16 @@
       eventLog.length = 0;
       lastEventSignature.clear();
       sendResponse({ ok: true });
+      return false;
+    }
+    if (message && message.type === "WATCHDOG_HEALTH") {
+      healthWakeCount++;
+      lastHealthWakeAt = Date.now();
+      if (config.enabled) {
+        if (!cooldownHydrated && config.mode !== "errors") hydrateCooldown();
+        scheduleCheck();
+      }
+      sendResponse({ ok: true, enabled: config.enabled, monitorCheckCount });
       return false;
     }
     if (message && message.type === "WATCHDOG_DIAGNOSE") {

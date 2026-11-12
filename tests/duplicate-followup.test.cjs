@@ -850,17 +850,45 @@ test('pre-click Send button disappearance releases claim and retries existing Wa
   assert.equal(chat.clicks(), 1, 'never send duplicates after one click');
 });
 
-test('a human draft identical to the auto-reply is NOT claimed as Watchdog-owned', async () => {
+test('an auto-reply already in the composer is reused and sent exactly once', async () => {
   const chat = createHarness();
   await chat.baseline();
+  // Intentional policy: even manually typed identical text is eligible.
   chat.setEditorText('Ок, продолжаем');
   await chat.advance(1600);
   chat.poll();
   await chat.advance(5000);
   await chat.advance(300);
-  assert.equal(chat.clicks(), 0, 'never click on an identical human draft');
-  assert.equal(chat.editorText(), 'Ок, продолжаем');
+  assert.equal(chat.clicks(), 1, 'click Send for the exact configured reply');
+  assert.equal(chat.editorText(), '', 'ChatGPT clears the composer on submit');
+  assert.equal(chat.claimsMade(), 1);
+  await chat.advance(100000);
+  for (let i = 0; i < 8; i++) chat.poll();
+  assert.equal(chat.clicks(), 1, 'must not submit the same assistant reply twice');
+});
+
+test('almost-matching user draft remains protected', async () => {
+  const chat = createHarness();
+  await chat.baseline();
+  chat.setEditorText('Ок, продолжаем!');
+  await chat.advance(1600);
+  chat.poll();
+  await chat.advance(5000);
+  await chat.advance(300);
+  assert.equal(chat.clicks(), 0, 'a different draft must not be sent');
+  assert.equal(chat.editorText(), 'Ок, продолжаем!');
   assert.equal(chat.claimsMade(), 0);
+});
+
+test('replayed assistant turn cannot send existing matching text twice', async () => {
+  const chat = createHarness();
+  await chat.sendFirst();
+  chat.setEditorText('Ок, продолжаем');
+  chat.poll();
+  await chat.advance(70000);
+  for (let i = 0; i < 8; i++) chat.poll();
+  assert.equal(chat.clicks(), 1, 'deduplication still forbids a replay');
+  assert.equal(chat.editorText(), 'Ок, продолжаем', 'do not touch the draft of a handled turn');
 });
 
 test('explicit stream failure is recognized even when completion marker is present', async () => {

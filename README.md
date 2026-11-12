@@ -1,5 +1,9 @@
 # Chat Watchdog
 
+## 0.2.17 — reuse matching auto-reply in the composer
+
+If the active editor already contains the exact configured auto-continue phrase, reuse it and attempt Send without inserting it again. Different text remains untouched. This behavior also applies to text typed manually; after a successful claim and click, existing duplicate protections still apply. This is a deliberate change to the draft-safety policy, not a change to error detection, sounds, or the five-attempt limit.
+
 ## 0.2.16 — recycled reply indices, send-claim diagnostics and monitor recovery
 
 - **Stuck auto-send / “Повторная отправка заблокирована”:** ChatGPT may render a new assistant reply at the same DOM position as an earlier reply. If both a stable assistant ID and a logical user turn are available, the background ledger now deduplicates by those IDs rather than treating a reused ordinal as already sent. Repeated assistant IDs and repeated user turns are still rejected, including across multiple tabs. For unsupported/ID-less layouts, the old conservative ordinal protection remains. This handles legacy 0.2.15 ledgers without deleting history.

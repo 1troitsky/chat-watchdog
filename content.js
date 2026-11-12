@@ -757,13 +757,14 @@
       return;
     }
     const editor = findEditor(selectors.editor);
-    const ourDraft = !!(editor && watchdogDraft &&
-      watchdogDraft.token === assistantToken && watchdogDraft.text === config.reply &&
-      editorText(editor) === watchdogDraft.text &&
-      (watchdogDraft.editor === editor || watchdogDraft.editor?.isConnected === false));
-    if (!editor || (editorText(editor) && !ourDraft)) {
+    // The composer can outlive a content-script restart or a lost draft
+    // reference. Reuse its text when it exactly equals the configured
+    // auto-reply, regardless of who entered it. Never overwrite other text.
+    const currentDraft = editor ? editorText(editor) : "";
+    const replyAlreadyPresent = !!(editor && currentDraft === config.reply);
+    if (!editor || (currentDraft && !replyAlreadyPresent)) {
       failed(editor ? "Поле ввода занято" : "Поле ввода не найдено");
-      return; // Never overwrite a human draft.
+      return; // Preserve any different user draft.
     }
     // A stable finished reply must be the newest visible turn.
     if (!followsUser(result.node, latestUserTurn().node)) {
@@ -772,7 +773,7 @@
     }
     sending = true;
     try {
-      if (!ourDraft) {
+      if (!replyAlreadyPresent) {
         fillEditor(editor, config.reply);
         watchdogDraft = { editor, text: config.reply, token: assistantToken };
       }

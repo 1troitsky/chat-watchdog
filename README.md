@@ -1,5 +1,13 @@
 # Chat Watchdog
 
+## 0.2.18 — bundled default audio
+
+- Two bundled sounds work immediately with **no file selection**: `sounds/sfx-16.mp3` plays **once per new completed assistant answer**; `sounds/01507.mp3` is used for **each new detected error**, preserving the original error alert behavior.
+- The two independent audio players and existing deduplication/retry logic are unchanged.
+- Uploading your own audio still overrides the bundled sound **for that tab and channel**. Use “Вернуть стандартный звук” to remove the override.
+- Extension default sound files are bundled with the ZIP and can play in the offscreen extension document.
+
+
 ## 0.2.17 — reuse matching auto-reply in the composer
 
 If the active editor already contains the exact configured auto-continue phrase, reuse it and attempt Send without inserting it again. Different text remains untouched. This behavior also applies to text typed manually; after a successful claim and click, existing duplicate protections still apply. This is a deliberate change to the draft-safety policy, not a change to error detection, sounds, or the five-attempt limit.

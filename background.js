@@ -155,7 +155,7 @@ async function ensureOffscreen() {
     creatingOffscreen = chrome.offscreen.createDocument({
       url: "offscreen.html",
       reasons: ["AUDIO_PLAYBACK"],
-      justification: "Play user-selected error and completed-reply notification sounds."
+      justification: "Play bundled or user-selected error and completed-reply notification sounds."
     }).finally(() => { creatingOffscreen = null; });
   }
   await creatingOffscreen;
@@ -173,8 +173,9 @@ async function playTabAudio(tabId, sender, kind = "error") {
   const epoch = nextAudioEpoch(tabId, kind);
   const items = await chrome.storage.session.get(key(tabId));
   const config = items[key(tabId)];
+  // Bundled sounds are always available; a user-selected file simply overrides
+  // the corresponding channel. Do not require custom audio names in settings.
   if (!config || !config.enabled ||
-      !(kind === "completion" ? config.completionAudioName : config.audioName) ||
       (kind === "error" && config.mode === "continue")) return;
   if (!sender.tab?.url || new URL(sender.tab.url).origin !== config.origin) return;
   await ensureOffscreen();
@@ -202,7 +203,7 @@ async function playCompletionOnce(tabId, sender, token) {
     const known = Array.isArray(values[sessionKey]) ? values[sessionKey] : [];
     if (known.includes(token)) return { ok: false, reason: "duplicate" };
     await chrome.storage.session.set({ [sessionKey]: [...known.slice(-199), token] });
-    if (config.completionAudioName) await playTabAudio(tabId, sender, "completion");
+    await playTabAudio(tabId, sender, "completion");
     return { ok: true };
   });
   completionQueues.set(sessionKey, task);

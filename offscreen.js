@@ -19,21 +19,25 @@ function releasePlayer(key) {
   player.audio.pause();
   player.audio.removeAttribute("src");
   player.audio.load();
-  URL.revokeObjectURL(player.url);
+  if (player.objectUrl) URL.revokeObjectURL(player.objectUrl);
 }
 
 async function playForTab(tabId, kind = "error") {
   const key = channelKey(tabId, kind);
   const revision = nextRevision(key);
-  const file = await ChatWatchdogAudio.get(tabId, kind);
+  // Existing per-tab audio in IndexedDB wins. Fresh installations and tabs
+  // automatically use the files bundled with this Chrome extension instead.
+  const file = await ChatWatchdogAudio.get(tabId, kind).catch(() => null);
   if (revisions.get(key) !== revision) return { ok: false, cancelled: true };
-  if (!file) return { ok: false, error: "No audio file selected" };
 
   releasePlayer(key);
-  const url = URL.createObjectURL(file);
-  const audio = new Audio(url);
+  const objectUrl = file ? URL.createObjectURL(file) : null;
+  const src = objectUrl || chrome.runtime.getURL(
+    kind === "completion" ? "sounds/sfx-16.mp3" : "sounds/01507.mp3"
+  );
+  const audio = new Audio(src);
   audio.loop = false;
-  players.set(key, { audio, url });
+  players.set(key, { audio, objectUrl });
   audio.addEventListener("ended", () => {
     if (players.get(key)?.audio === audio) releasePlayer(key);
   }, { once: true });

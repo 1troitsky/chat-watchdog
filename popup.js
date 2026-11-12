@@ -35,8 +35,8 @@
     for (const field of fields) $(field).value = config[field];
     $("autoSendSettings").hidden = config.mode === "errors";
     $("errorSettings").hidden = config.mode === "continue";
-    $("audioName").textContent = config.audioName || "Файл не выбран";
-    $("completionAudioName").textContent = config.completionAudioName || "Файл не выбран";
+    $("audioName").textContent = config.audioName || "По умолчанию: 01507.mp3";
+    $("completionAudioName").textContent = config.completionAudioName || "По умолчанию: sfx-16.mp3";
   };
   render();
 
@@ -271,6 +271,26 @@
     } catch (error) {
       status("Не получилось сохранить MP3: " + error.message);
     }
+  });
+
+  $("resetErrorAudio").addEventListener("click", async () => {
+    try {
+      await ChatWatchdogAudio.remove(tab.id, "error");
+      config.audioName = "";
+      $("audioFile").value = "";
+      render();
+      await save();
+    } catch (error) { status("Не удалось вернуть стандартный звук: " + error.message); }
+  });
+
+  $("resetCompletionAudio").addEventListener("click", async () => {
+    try {
+      await ChatWatchdogAudio.remove(tab.id, "completion");
+      config.completionAudioName = "";
+      $("completionAudioFile").value = "";
+      render();
+      await save();
+    } catch (error) { status("Не удалось вернуть стандартный звук: " + error.message); }
   });
 
   $("completionAudioFile").addEventListener("change", async () => {

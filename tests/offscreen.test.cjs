@@ -7,15 +7,20 @@ const vm = require("node:vm");
 function harness() {
   const listeners = [];
   const playing = [];
+  const revoked = [];
   const context = {
     Map, URL: {
       createObjectURL: () => "blob:fixture",
-      revokeObjectURL: () => {}
+      revokeObjectURL: url => { revoked.push(url); }
     },
     ChatWatchdogAudio: { get: async () => ({ type: "audio/mp3" }) },
-    chrome: { runtime: { onMessage: { addListener(fn) { listeners.push(fn); } } } },
+    chrome: { runtime: {
+      onMessage: { addListener(fn) { listeners.push(fn); } },
+      getURL: url => "chrome-extension://watchdog-test/" + url
+    } },
     Audio: class {
-      constructor() {
+      constructor(src) {
+        this.src = src;
         this.paused = false;
         this.events = {};
         playing.push(this);
@@ -34,7 +39,7 @@ function harness() {
       listeners[0]({ type, tabId, kind }, {}, resolve);
     });
   }
-  return { send, playing, context };
+  return { send, playing, context, revoked };
 }
 
 test("dialog STOP immediately pauses the matching tab without affecting another tab", async () => {
@@ -80,4 +85,50 @@ test("completion and error use independent players; stopping an error does not c
   assert.equal((await send("OFFSCREEN_STOP", 11)).ok, true);
   assert.equal(playing[0].paused, true);
   assert.equal(playing[2].paused, true);
+});
+
+
+test("fresh tabs use bundled MP3s and keep each channel independent", async () => {
+  const { send, playing, context, revoked } = harness();
+  context.ChatWatchdogAudio.get = async () => undefined; // Fresh installation.
+  assert.equal((await send("OFFSCREEN_PLAY", 7, "completion")).ok, true);
+  assert.equal((await send("OFFSCREEN_PLAY", 7, "error")).ok, true);
+  assert.equal(playing[0].src, "chrome-extension://watchdog-test/sounds/sfx-16.mp3");
+  assert.equal(playing[1].src, "chrome-extension://watchdog-test/sounds/01507.mp3");
+  assert.equal(playing[0].loop, false);
+  assert.equal(playing[1].loop, false);
+  assert.deepEqual(revoked, [], "extension URLs must not be revoked as blob URLs");
+  await send("OFFSCREEN_STOP", 7, "error");
+  assert.equal(playing[0].paused, false, "error sound cannot stop completion");
+  assert.equal(playing[1].paused, true);
+  assert.equal((await send("OFFSCREEN_PLAY", 7, "error")).ok, true);
+  assert.equal(playing[2].src, "chrome-extension://watchdog-test/sounds/01507.mp3");
+});
+
+test("per-tab uploaded audio overrides only its channel and releases its blob", async () => {
+  const { send, playing, context, revoked } = harness();
+  context.ChatWatchdogAudio.get = async (_tab, kind) =>
+    kind === "completion" ? { name: "custom.wav", type: "audio/wav" } : undefined;
+  await send("OFFSCREEN_PLAY", 7, "completion");
+  await send("OFFSCREEN_PLAY", 7, "error");
+  assert.equal(playing[0].src, "blob:fixture");
+  assert.equal(playing[1].src, "chrome-extension://watchdog-test/sounds/01507.mp3");
+  await send("OFFSCREEN_STOP", 7, "completion");
+  assert.deepEqual(revoked, ["blob:fixture"]);
+});
+
+test("unavailable IndexedDB still falls back to bundled sounds", async () => {
+  const { send, playing, context } = harness();
+  context.ChatWatchdogAudio.get = async () => { throw new Error("IndexedDB unavailable"); };
+  assert.equal((await send("OFFSCREEN_PLAY", 7, "error")).ok, true);
+  assert.equal(playing[0].src, "chrome-extension://watchdog-test/sounds/01507.mp3");
+});
+
+test("bundled files are real readable MP3s included in the extension directory", () => {
+  const root = path.join(__dirname, "..", "sounds");
+  for (const file of ["sfx-16.mp3", "01507.mp3"]) {
+    const audio = fs.readFileSync(path.join(root, file));
+    assert.ok(audio.length > 1000, file + " must not be empty");
+    assert.equal(audio.subarray(0, 3).toString("ascii"), "ID3", "expected an MP3 header");
+  }
 });

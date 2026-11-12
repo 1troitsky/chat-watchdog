@@ -406,3 +406,22 @@ test("worker restart does not move an already scheduled health alarm", async () 
   for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve));
   assert.equal(alarms.count, 1, "restarting service worker must preserve the existing alarm");
 });
+
+
+test("completion audio works by default without a user-selected sound", async () => {
+  const app = createWorker();
+  app.configure(7, { completionAudioName: "", audioName: "" });
+  assert.equal((await app.completion("first")).ok, true);
+  assert.equal((await app.completion("first")).reason, "duplicate");
+  assert.equal((await app.completion("second")).ok, true);
+  assert.equal(app.playback.filter(x =>
+    x.type === "OFFSCREEN_PLAY" && x.kind === "completion").length, 2);
+});
+
+test("only-autocontinue mode keeps error sounds off with bundled defaults", async () => {
+  const app = createWorker();
+  app.configure(7, { mode: "continue", audioName: "", completionAudioName: "" });
+  assert.equal((await app.completion("first")).ok, true);
+  assert.equal(app.playback.filter(x => x.type === "OFFSCREEN_PLAY" &&
+    x.kind === "completion").length, 1);
+});

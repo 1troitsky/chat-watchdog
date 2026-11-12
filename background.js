@@ -251,7 +251,13 @@ if (chrome.alarms?.create && chrome.alarms?.onAlarm) {
   chrome.alarms.onAlarm.addListener(alarm => {
     if (alarm.name === healthAlarmName) scanEnabledTabs().catch(console.warn);
   });
-  chrome.alarms.create(healthAlarmName, { periodInMinutes: 1 }).catch(console.warn);
+  // Existing alarms survive a service-worker suspension. Do not postpone
+  // the next probe every time the worker wakes for an unrelated message.
+  const ensureHealthAlarm = async () => {
+    const existing = chrome.alarms.get ? await chrome.alarms.get(healthAlarmName) : null;
+    if (!existing) await chrome.alarms.create(healthAlarmName, { periodInMinutes: 1 });
+  };
+  ensureHealthAlarm().catch(console.warn);
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

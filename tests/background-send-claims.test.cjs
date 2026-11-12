@@ -6,7 +6,7 @@ const vm = require("node:vm");
 
 const background = fs.readFileSync(path.join(__dirname, "..", "background.js"), "utf8");
 
-function createWorker(saved = new Map(), clock = { now: 1000000 }) {
+function createWorker(saved = new Map(), clock = { now: 1000000 }, alarmState = { count: 0, current: null }) {
   let onMessage;
   let onUpdated;
   let onRemoved;
@@ -49,7 +49,14 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }) {
       }
     },
     storage: { session },
-    alarms: { onAlarm: { addListener(fn) { onAlarm = fn; } }, create: async () => {} },
+    alarms: {
+      onAlarm: { addListener(fn) { onAlarm = fn; } },
+      get: async () => alarmState.current,
+      create: async (name, options) => {
+        alarmState.count++;
+        alarmState.current = { name, ...options };
+      }
+    },
     scripting: { async executeScript() { reachable = true; healthEvents.push("inject"); } }
   };
   vm.runInNewContext(background, {
@@ -95,7 +102,7 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }) {
     setHealthTabs(value, isReachable) { tabs = value; reachable = isReachable; },
     async runHealthAlarm() { onAlarm({ name: "chat-watchdog-health" });
       for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve)); },
-    healthEvents,
+    healthEvents, alarmState,
     get onUpdated() { return onUpdated; }, get onRemoved() { return onRemoved; } };
 }
 
@@ -385,4 +392,17 @@ test("health checks never touch disabled or cross-origin tabs", async () => {
   ], false);
   await app.runHealthAlarm();
   assert.equal(app.healthEvents.length, 0);
+});
+
+
+test("worker restart does not move an already scheduled health alarm", async () => {
+  const saved = new Map(), clock = { now: 1000000 };
+  const alarms = { count: 0, current: null };
+  createWorker(saved, clock, alarms);
+  for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(alarms.count, 1);
+  assert.equal(alarms.current.periodInMinutes, 1);
+  createWorker(saved, clock, alarms);
+  for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(alarms.count, 1, "restarting service worker must preserve the existing alarm");
 });

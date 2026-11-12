@@ -6,6 +6,7 @@ const key = (tabId) => "tab:" + tabId;
 const audioEpochs = new Map();
 const completionQueues = new Map();
 const sendClaimQueues = new Map();
+let nextSendLease = 0;
 // Scope to the conversation, not the tab: the same chat can be open twice.
 const conversationKey = url => {
   const parsed = new URL(url);
@@ -68,14 +69,54 @@ async function claimSend(tabId, token, assistantOrdinal, sender) {
           retryAfterSeconds: Math.ceil((lockedUntil - now) / 1000) };
       }
     }
+    // A short-lived, exclusive pre-click reservation. If the UI changes
+    // BEFORE any click, its owner may safely release it. Once a click is
+    // attempted the reservation is never released: delayed network delivery
+    // must not cause a duplicate user message.
+    const leaseId = tabId + ":" + now + ":" + (++nextSendLease) + ":" + Math.random();
     await chrome.storage.session.set({
       [scope]: {
         origin: config.origin, tokens: [...seen.slice(-499), token],
         lastClaimAt: now, lockedUntil: now + minIntervalMs,
-        maxAssistantOrdinal: assistantOrdinal
+        maxAssistantOrdinal: assistantOrdinal, leaseId, leaseTabId: tabId,
+        leaseToken: token,
+        previousLastClaimAt: prior?.lastClaimAt || 0,
+        previousLockedUntil: prior?.lockedUntil || 0,
+        previousMaxAssistantOrdinal: prior?.maxAssistantOrdinal || 0
       }
     });
-    return { ok: true, lockedUntil: now + minIntervalMs };
+    return { ok: true, lockedUntil: now + minIntervalMs, leaseId };
+  });
+  sendClaimQueues.set(scope, work);
+  try { return await work; }
+  finally { if (sendClaimQueues.get(scope) === work) sendClaimQueues.delete(scope); }
+}
+
+// Atomic rollback ONLY when the original tab proves it never clicked Send.
+// A mismatched lease, token, or tab cannot release another sender's claim.
+async function releaseUnclickedSend(tabId, token, leaseId, sender) {
+  if (typeof token !== "string" || !token ||
+      typeof leaseId !== "string" || !leaseId || !sender.tab?.url)
+    return { ok: false, reason: "invalid-release" };
+  let scope;
+  try { scope = conversationKey(sender.tab.url); }
+  catch { return { ok: false, reason: "invalid-url" }; }
+  const previous = sendClaimQueues.get(scope) || Promise.resolve();
+  const work = previous.catch(() => {}).then(async () => {
+    const ledger = (await chrome.storage.session.get(scope))[scope];
+    if (!ledger || ledger.leaseToken !== token || ledger.leaseId !== leaseId ||
+        ledger.leaseTabId !== tabId ||
+        ledger.origin !== new URL(sender.tab.url).origin)
+      return { ok: false, reason: "lease-mismatch" };
+    const restored = {
+      origin: ledger.origin,
+      tokens: ledger.tokens.filter(value => value !== token),
+      lastClaimAt: ledger.previousLastClaimAt,
+      lockedUntil: ledger.previousLockedUntil,
+      maxAssistantOrdinal: ledger.previousMaxAssistantOrdinal
+    };
+    await chrome.storage.session.set({ [scope]: restored });
+    return { ok: true, lockedUntil: restored.lockedUntil };
   });
   sendClaimQueues.set(scope, work);
   try { return await work; }
@@ -164,6 +205,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const tabId = sender.tab.id;
   if (message.type === "CLAIM_SEND") {
     claimSend(tabId, message.token, message.assistantOrdinal, sender)
+      .then(sendResponse)
+      .catch(() => sendResponse({ ok: false, reason: "storage-error" }));
+    return true;
+  }
+  if (message.type === "RELEASE_UNCLICKED_SEND") {
+    releaseUnclickedSend(tabId, message.token, message.leaseId, sender)
       .then(sendResponse)
       .catch(() => sendResponse({ ok: false, reason: "storage-error" }));
     return true;

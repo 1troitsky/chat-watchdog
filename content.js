@@ -43,6 +43,9 @@
   let completionCandidate = null;
   const completionNotified = new Set();
   let completionNotifications = 0;
+  let completionBaselineToken = null;
+  let missingMarkerCandidate = null;
+  const missingMarkerNotified = new Set();
   // An independent wake-up at the end of each cooldown complements the
   // MutationObserver and 1.5-second polling timer. No state is reset after
   // Send: the existing duplicate guards must remain intact.
@@ -221,7 +224,10 @@
     if (!completionInitialized) {
       completionInitialized = true;
       // Do not play the old chat history upon enabling the extension.
-      if (!stopped && text) completionNotified.add(token);
+      if (!stopped && text) {
+        completionNotified.add(token);
+        completionBaselineToken = token;
+      }
     }
     if (!text || !followsUser(result.node, latestUserTurn().node) ||
         completionNotified.has(token)) return;
@@ -249,6 +255,45 @@
     completionNotifications++;
     if (config.completionAudioName) {
       chrome.runtime.sendMessage({ type: "PLAY_COMPLETION", token }).catch(() => {});
+    }
+  }
+
+  // Optional heuristic: a stable answer without a configured completion
+  // marker is suspicious, but it is NOT a proven transport error. The user
+  // must opt in, and each assistant turn triggers at most one notification.
+  function checkMissingMarker() {
+    if (!config.enabled || config.mode === "continue" ||
+        !config.missingMarkerError || !config.marker) {
+      missingMarkerCandidate = null;
+      return;
+    }
+    const result = latestAssistant(currentSelectors().assistant);
+    if (!result.node || hasStopButton(currentSelectors().stop)) {
+      missingMarkerCandidate = null;
+      return;
+    }
+    const token = completionTurnKey(result);
+    const text = textOf(result.node);
+    if (!text || token === completionBaselineToken || missingMarkerNotified.has(token) ||
+        Core.completionMatches(text, config.marker, config.markerRegex)) {
+      missingMarkerCandidate = null;
+      return;
+    }
+    if (!missingMarkerCandidate || missingMarkerCandidate.token !== token ||
+        missingMarkerCandidate.text !== text) {
+      missingMarkerCandidate = { token, text, stableSince: Date.now() };
+      return;
+    }
+    if (Date.now() - missingMarkerCandidate.stableSince < 10000) return;
+    missingMarkerNotified.add(token);
+    if (missingMarkerNotified.size > 200)
+      missingMarkerNotified.delete(missingMarkerNotified.values().next().value);
+    const message = "Ответ завершился без маркера «" + config.marker + "» (возможен обрыв)";
+    recordEvent("error", message);
+    if (dialogRoot) dialogError.textContent = message;
+    else {
+      showDialog(message);
+      chrome.runtime.sendMessage({ type: "PLAY_ERROR" }).catch(() => {});
     }
   }
 
@@ -289,10 +334,18 @@
     return candidates.find((element) => element.id === "prompt-textarea") || candidates[0];
   }
 
-  function findSendButton(selector) {
-    return query(selector).find((button) =>
-      visible(button) && !Core.isStopAction(button) &&
-      !button.disabled && button.getAttribute("aria-disabled") !== "true");
+  function findSendButton(selector, editor = null) {
+    const isEnabled = (button) => visible(button) && !Core.isStopAction(button) &&
+      !button.disabled && button.getAttribute("aria-disabled") !== "true";
+    // Prefer the button associated with the composer we filled. A second
+    // mounted chat/editor must never redirect our send to the wrong form.
+    const form = editor && typeof editor.closest === "function" && editor.closest("form");
+    if (form && typeof form.querySelectorAll === "function") {
+      let sameForm = [];
+      try { sameForm = Array.from(form.querySelectorAll(selector)); } catch {}
+      if (sameForm.length) return sameForm.find(isEnabled);
+    }
+    return query(selector).find(isEnabled);
   }
 
   function hasStopButton(selector) {
@@ -411,6 +464,19 @@
       const target = specificErrorNode(node, matched);
       const signature = matched + ":" + textOf(target).slice(0, 500);
       matches.push({ node: target, signature, phrase: matched });
+    }
+    // ChatGPT sometimes renders transport failures in an ordinary paragraph,
+    // not a role=alert toast. Inspect only standalone known SYSTEM error lines
+    // and exclude user/assistant chat bubbles and the composer.
+    for (const node of query('p, [role="paragraph"], [data-testid*="error"]')) {
+      if (!visible(node) || isWatchdogUi(node)) continue;
+      if (typeof node.closest === "function" && node.closest(
+        '[data-user-message-bubble], [data-message-author-role="user"], ' +
+        '[data-message-author-role="assistant"], [data-turn-key], ' +
+        '[contenteditable], [data-composer-input], form, nav, aside, header, footer, ' +
+        '[role="alert"], [role="status"]')) continue;
+      const phrase = Core.findSystemErrorLine(textOf(node), config.errorWords);
+      if (phrase) matches.push({ node, signature: "system:" + phrase + ":" + textOf(node).slice(0, 500), phrase });
     }
     const lastReply = latestAssistant(currentSelectors().assistant).node;
     let assistantErrorActive = false;
@@ -593,6 +659,27 @@
     }
   }
 
+  // No click occurred: remove the provisional shared claim, allowing the
+  // following scheduled attempt to try again without losing duplicate safety.
+  async function releaseUnclickedClaim(token, claim) {
+    try {
+      const result = await chrome.runtime.sendMessage({
+        type: "RELEASE_UNCLICKED_SEND", token, leaseId: claim.leaseId
+      });
+      if (result?.ok && Number.isFinite(result.lockedUntil)) {
+        globalLockedUntil = result.lockedUntil;
+        armCooldownWake();
+      } else {
+        // A failed rollback is ambiguous. Do not risk a double submission.
+        submittedAssistantTokens.add(token);
+        recordEvent("blocked", "Резервирование отправки не удалось снять — повтор заблокирован");
+      }
+    } catch {
+      submittedAssistantTokens.add(token);
+      recordEvent("blocked", "Не удалось подтвердить отмену отправки — повтор заблокирован");
+    }
+  }
+
   async function sendIfReady(expectedKey) {
     pending = null;
     const expectedModeEpoch = modeEpoch;
@@ -660,8 +747,9 @@
     }
     const editor = findEditor(selectors.editor);
     const ourDraft = !!(editor && watchdogDraft &&
-      watchdogDraft.token === assistantToken && watchdogDraft.editor === editor &&
-      editorText(editor) === watchdogDraft.text);
+      watchdogDraft.token === assistantToken && watchdogDraft.text === config.reply &&
+      editorText(editor) === watchdogDraft.text &&
+      (watchdogDraft.editor === editor || watchdogDraft.editor?.isConnected === false));
     if (!editor || (editorText(editor) && !ourDraft)) {
       failed(editor ? "Поле ввода занято" : "Поле ввода не найдено");
       return; // Never overwrite a human draft.
@@ -677,7 +765,8 @@
         fillEditor(editor, config.reply);
         watchdogDraft = { editor, text: config.reply, token: assistantToken };
       }
-      for (let retry = 0; retry < 10; retry++) {
+      // Reactive UIs sometimes need more than 2 seconds to activate Send.
+      for (let retry = 0; retry < 25; retry++) {
         await new Promise(resolve => setTimeout(resolve, 200));
         if (!config.enabled || config.mode === "errors" ||
             modeEpoch !== expectedModeEpoch || location.href !== route) {
@@ -702,10 +791,13 @@
           autoDecision("Отправка отменена: ответ изменился после заполнения поля");
           return;
         }
-        const button = findSendButton(selectors.send);
+        const button = findSendButton(selectors.send, editor);
         if (!button) continue;
-        if (!config.enabled || config.mode === "errors" || modeEpoch !== expectedModeEpoch ||
-            Core.isStopAction(button) || hasStopButton(selectors.stop)) return;
+        if (!config.enabled || config.mode === "errors" || modeEpoch !== expectedModeEpoch) return;
+        if (Core.isStopAction(button) || hasStopButton(selectors.stop)) {
+          failed("Кнопка Stop блокирует отправку");
+          return;
+        }
         const userTurn = latestUserTurn().logicalTurn;
         if (sendGuard.alreadySent(text, userTurn)) return;
         // The background worker owns the deduplication ledger for this tab.
@@ -735,32 +827,58 @@
           Number.isFinite(claim.lockedUntil) ? claim.lockedUntil :
           Date.now() + config.cooldownSeconds * 1000);
         cancelPending();
-        // Reserve even if the UI changes while we are waiting. The
-        // background ledger already owns this reply and must never retry it.
-        submittedAssistantTokens.add(token);
-        lastClaimedAssistantOrdinal = Math.max(lastClaimedAssistantOrdinal, current.ordinal);
-        // Claim may take time: conditions can change during the await.
-        // A claim is intentionally never rolled back, even if UI changed;
-        // preventing duplicate Sends is more important than retrying blindly.
+        // The claim is provisional until Send is actually clicked. If the
+        // composer changes during the worker round trip, RELEASE it safely.
         if (!config.enabled || config.mode === "errors" || modeEpoch !== expectedModeEpoch ||
             location.href !== route || hasStopButton(selectors.stop) ||
-            editorText(editor) !== config.reply) return;
+            editorText(editor) !== config.reply) {
+          await releaseUnclickedClaim(token, claim);
+          failed("Отправка заблокирована до нажатия Send");
+          return;
+        }
         const verified = latestAssistant(selectors.assistant);
         if (!verified.node ||
             !followsUser(verified.node, latestUserTurn().node) ||
             sendToken(verified.node, textOf(verified.node), verified.count) !== token ||
-            !Core.completionMatches(textOf(verified.node), config.marker, config.markerRegex)) return;
-        const finalButton = findSendButton(selectors.send);
+            !Core.completionMatches(textOf(verified.node), config.marker, config.markerRegex)) {
+          await releaseUnclickedClaim(token, claim);
+          autoDecision("Ответ изменился до нажатия Send");
+          return;
+        }
+        const finalButton = findSendButton(selectors.send, editor);
         if (!finalButton || Core.isStopAction(finalButton) ||
             hasStopButton(selectors.stop) || !config.enabled ||
-            config.mode === "errors" || modeEpoch !== expectedModeEpoch) return;
+            config.mode === "errors" || modeEpoch !== expectedModeEpoch) {
+          await releaseUnclickedClaim(token, claim);
+          failed("Кнопка Send исчезла до отправки");
+          return;
+        }
+        // From this point onward clicking is ambiguous if ChatGPT delays
+        // processing. Never release this token after the click attempt.
+        submittedAssistantTokens.add(token);
+        lastClaimedAssistantOrdinal = Math.max(lastClaimedAssistantOrdinal, current.ordinal);
         sendGuard.record(text, userTurn);
         lastUserTurnAtSend = userTurn;
         handled.add(expectedKey);
         lastClickAt = Date.now();
         sendClicks++;
-        finalButton.click();
+        try { finalButton.click(); }
+        catch (error) {
+          recordEvent("blocked", "Клик Send завершился ошибкой; повтор запрещён во избежание дубля");
+          return;
+        }
         watchdogDraft = null;
+        // A click is not proof the app accepted the message. Diagnose a
+        // stuck composer, but do not click twice after an ambiguous send.
+        const clickRoute = route;
+        setTimeout(() => {
+          if (route === clickRoute && editor.isConnected !== false &&
+              latestUserTurn().logicalTurn === userTurn &&
+              editorText(editor) === config.reply) {
+            recordEvent("blocked", "Нажатие Send не подтверждено: текст остался в поле; " +
+              "автоповтор запрещён для защиты от дублей");
+          }
+        }, 2500);
         // Explicitly re-arm monitoring after Send. Also wake at cooldown end
         // even if the next answer arrived while we were paused.
         armCooldownWake();
@@ -788,6 +906,9 @@
       completionInitialized = false;
       completionCandidate = null;
       completionNotified.clear();
+      completionBaselineToken = null;
+      missingMarkerCandidate = null;
+      missingMarkerNotified.clear();
       route = location.href;
       lastClaimedAssistantOrdinal = 0;
       cancelCooldownWake();
@@ -799,9 +920,14 @@
     }
     checkReplyCompletion();
     if (config.mode !== "continue" && checkError()) {
+      // An explicit transport failure outranks the optional missing-marker
+      // heuristic. Never alert twice for the same incomplete reply.
+      const latest = latestAssistant(currentSelectors().assistant);
+      if (latest.node) missingMarkerNotified.add(completionTurnKey(latest));
       cancelPending();
       return;
     }
+    checkMissingMarker();
     if (config.mode === "errors") {
       cancelPending();
       return;
@@ -941,6 +1067,8 @@
       cooldownWakeCount,
       seenInitial,
       completionNotifications,
+      missingMarkerError: config.missingMarkerError,
+      missingMarkerAlerts: missingMarkerNotified.size,
       lastAutoDecision, lastAutoDecisionAt,
       scheduledSendAt: pending ? pending.dueAt : null
     };

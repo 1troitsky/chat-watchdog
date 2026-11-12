@@ -31,6 +31,7 @@
     $("enabled").checked = config.enabled;
     $("markerRegex").checked = config.markerRegex;
     $("toastEnabled").checked = config.toastEnabled;
+    $("missingMarkerError").checked = config.missingMarkerError;
     for (const field of fields) $(field).value = config[field];
     $("autoSendSettings").hidden = config.mode === "errors";
     $("errorSettings").hidden = config.mode === "continue";
@@ -70,6 +71,11 @@
       await save();
     });
   }
+
+  $("missingMarkerError").addEventListener("change", async () => {
+    config.missingMarkerError = $("missingMarkerError").checked;
+    await save();
+  });
 
   $("toastEnabled").addEventListener("change", async () => {
     config.toastEnabled = $("toastEnabled").checked;
@@ -175,6 +181,8 @@
         "Последняя попытка: " + (result.lastAutoDecisionAt || "нет"),
         "Причина/результат: " + result.lastAutoDecision,
         "Звук завершения (ответов): " + (result.completionNotifications || 0),
+        "Без маркера = ошибка: " + (result.missingMarkerError ? "ДА" : "НЕТ"),
+        "Предупреждений об отсутствии маркера: " + (result.missingMarkerAlerts || 0),
         "Последняя проверка: " + (result.lastMonitorCheckAt ? new Date(result.lastMonitorCheckAt).toLocaleTimeString("ru-RU") : "нет"),
         "Срабатываний будильника после паузы: " + (result.cooldownWakeCount || 0)
       ].join("\n");

@@ -12,8 +12,9 @@
     cooldownSeconds: 30,
     cooldownSecondsVersion: 2,
     toastEnabled: true,
-    errorWordsVersion: 1,
-    errorWords: "Соединение прервано\nОшибка соединения\nНет ответа от ChatGPT. Проверьте подключение к интернету\nВы достигли лимита\nВы достигни лимита\nConnection interrupted\nNetwork error\nRate limit reached\n!!!ЕСТЬ ЗАДАНИЕ ДЛЯ АГЕНТА!!!\n!!!ЖДУ РЕШЕНИЕ!!!\n!!!У НАС ПРОБЛЕМА!!!\n!!НУЖНА ЛОКАЛЬНАЯ ПРОВЕРКА!!!",
+    missingMarkerError: false, // opt-in: incomplete stable answer is an alert
+    errorWordsVersion: 2,
+    errorWords: "Соединение прервано\nОшибка соединения\nНет ответа от ChatGPT. Проверьте подключение к интернету\nВы достигли лимита\nВы достигни лимита\nConnection interrupted\nNetwork error\nRate limit reached\nВремя ожидания доставки сообщения истекло. Попробуйте снова\nВы достигли максимальной длины этого обсуждения\nFailed to fetch\nОшибка в потоке сообщений\n!!!ЕСТЬ ЗАДАНИЕ ДЛЯ АГЕНТА!!!\n!!!ЖДУ РЕШЕНИЕ!!!\n!!!У НАС ПРОБЛЕМА!!!\n!!НУЖНА ЛОКАЛЬНАЯ ПРОВЕРКА!!!",
     assistantSelector: "",
     editorSelector: "",
     sendSelector: "",
@@ -30,7 +31,20 @@
     "!!!ЕСТЬ ЗАДАНИЕ ДЛЯ АГЕНТА!!!",
     "!!!ЖДУ РЕШЕНИЕ!!!",
     "!!!У НАС ПРОБЛЕМА!!!",
-    "!!НУЖНА ЛОКАЛЬНАЯ ПРОВЕРКА!!!"
+    "!!НУЖНА ЛОКАЛЬНАЯ ПРОВЕРКА!!!",
+    "Время ожидания доставки сообщения истекло. Попробуйте снова",
+    "Вы достигли максимальной длины этого обсуждения",
+    "Failed to fetch",
+    "Ошибка в потоке сообщений"
+  ]);
+
+  // These are recognized in standalone system UI messages, not searched
+  // indiscriminately inside the user's chat history or composer.
+  const SYSTEM_ERROR_PREFIXES = Object.freeze([
+    "Время ожидания доставки сообщения истекло",
+    "Вы достигли максимальной длины этого обсуждения",
+    "Failed to fetch",
+    "Ошибка в потоке сообщений"
   ]);
 
   function normalize(value) {
@@ -45,6 +59,7 @@
     config.mode = ["auto", "continue", "errors"].includes(config.mode) ? config.mode : "auto";
     config.markerRegex = config.markerRegex === true;
     config.toastEnabled = config.toastEnabled !== false;
+    config.missingMarkerError = config.missingMarkerError === true;
     config.delaySeconds = Math.max(1, Math.min(600, Number(config.delaySeconds) || 15));
     // Upgrade previously saved defaults, while retaining explicit values
     // selected with the new version or earlier non-default custom values.
@@ -65,13 +80,13 @@
     }
     // Upgrade existing tab settings once, without preventing later edits.
     // The new defaults would otherwise be hidden by saved errorWords strings.
-    if (typeof input.errorWords === "string" && !input.errorWordsVersion) {
+    if (typeof input.errorWords === "string" && Number(input.errorWordsVersion || 0) < 2) {
       const present = config.errorWords.split(/\r?\n/).map(s => s.trim());
       for (const phrase of NEW_ERROR_PHRASES) {
         if (!present.includes(phrase)) config.errorWords += "\n" + phrase;
       }
     }
-    config.errorWordsVersion = 1;
+    config.errorWordsVersion = 2;
     config.marker = config.marker.trim();
     config.reply = config.reply.trim() || DEFAULTS.reply;
     return config;
@@ -122,11 +137,33 @@
   // Standalone error markers in assistant replies are alerts; mention of a
   // phrase inside a paragraph should not trigger an alarm.
   function findErrorLine(text, phrases) {
-    const lines = String(text || "").split(/\r?\n/).map(line => line.trim());
+    const lines = String(text || "").split(/\r?\n/).map(line => line.trim().toLocaleLowerCase());
     return String(phrases || "").split(/\r?\n/)
       .map(phrase => phrase.trim())
       .filter(Boolean)
-      .find(phrase => lines.some(line => line.toLocaleLowerCase() === phrase.toLocaleLowerCase())) || null;
+      .find(phrase => lines.some(line => {
+        const needle = phrase.toLocaleLowerCase();
+        if (line === needle || line.replace(/[.!?。]+$/, "") === needle.replace(/[.!?。]+$/, ""))
+          return true;
+        // A few known system errors append recovery instructions to a
+        // standard prefix. Do not generalize this to user-defined phrases.
+        return SYSTEM_ERROR_PREFIXES.slice(0, 2).some(prefix =>
+          prefix.toLocaleLowerCase() === needle && line.startsWith(needle));
+      })) || null;
+  }
+
+  function findSystemErrorLine(text, phrases) {
+    const configured = String(phrases || "").split(/\r?\n/).map(s => s.trim().toLocaleLowerCase());
+    const line = String(text || "").trim();
+    if (line.length > 500 || line.includes("\n")) return null;
+    return SYSTEM_ERROR_PREFIXES.find((phrase, index) => {
+      const needle = phrase.toLocaleLowerCase();
+      if (!configured.some(item => item === needle || item.startsWith(needle + "."))) return false;
+      const actual = line.toLocaleLowerCase();
+      return actual === needle || actual.replace(/[.!?。]+$/, "") === needle ||
+        (index < 2 && (actual.startsWith(needle + ".") ||
+          actual.startsWith(needle + ",") || actual.startsWith(needle + " ")));
+    }) || null;
   }
 
   function findError(text, phrases) {
@@ -268,7 +305,8 @@
     };
   }
 
-  const api = { DEFAULTS, normalize, compileMarker, hasMarker, completionMatches, findError, findErrorLine, selectorsFor, isStopAction, createErrorTracker, createSendGuard, userTurnFingerprint };
+  const api = { DEFAULTS, normalize, compileMarker, hasMarker, completionMatches, findError,
+    findErrorLine, findSystemErrorLine, selectorsFor, isStopAction, createErrorTracker, createSendGuard, userTurnFingerprint };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.ChatWatchdogCore = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

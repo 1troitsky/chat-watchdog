@@ -61,6 +61,12 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }) {
       assert.equal(listening, true, "claim must use an async runtime response");
     });
   }
+  async function release(token, leaseId, tabId = 7, url = "https://chatgpt.com/c/a") {
+    return new Promise(resolve => {
+      assert.equal(onMessage({ type: "RELEASE_UNCLICKED_SEND", token, leaseId },
+        { tab: { id: tabId, url } }, resolve), true);
+    });
+  }
   async function completion(token, tabId = 7, url = "https://chatgpt.com/c/a") {
     return new Promise(resolve => {
       assert.equal(onMessage({ type: "PLAY_COMPLETION", token },
@@ -72,7 +78,7 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }) {
       enabled: true, mode: "auto", origin: "https://chatgpt.com", ...overrides
     });
   }
-  return { claim, completion, state, configure, saved, clock, playback,
+  return { claim, release, completion, state, configure, saved, clock, playback,
     get onUpdated() { return onUpdated; }, get onRemoved() { return onRemoved; } };
 }
 
@@ -232,4 +238,45 @@ test("completion notifications reject the wrong origin and disabled tabs", async
   app.configure(7, { enabled: false, completionAudioName: "done.wav" });
   assert.equal((await app.completion("token")).reason, "inactive");
   assert.equal(app.playback.length, 0);
+});
+
+test('a pre-click claim can be safely released and retried without cooldown', async () => {
+  const app = createWorker(); app.configure();
+  const first = await app.claim('assistant-one');
+  assert.equal(first.ok, true);
+  assert.equal(typeof first.leaseId, 'string');
+  assert.equal((await app.claim('assistant-one')).reason, 'duplicate');
+  const result = await app.release('assistant-one', first.leaseId);
+  assert.equal(result.ok, true);
+  assert.equal((await app.state()).lockedUntil, 0);
+  const retried = await app.claim('assistant-one');
+  assert.equal(retried.ok, true);
+  assert.notEqual(retried.leaseId, first.leaseId);
+  assert.equal((await app.release('assistant-one', first.leaseId)).reason, 'lease-mismatch');
+  assert.equal((await app.claim('assistant-one')).reason, 'duplicate');
+});
+
+test('a different tab or stale lease cannot release an active send reservation', async () => {
+  const app = createWorker(); app.configure(7); app.configure(8);
+  const claim = await app.claim('token', 7);
+  assert.equal((await app.release('token', claim.leaseId, 8)).reason, 'lease-mismatch');
+  assert.equal((await app.release('another-token', claim.leaseId, 7)).reason, 'lease-mismatch');
+  assert.equal((await app.release('token', 'wrong-lease', 7)).reason, 'lease-mismatch');
+  assert.equal((await app.claim('token', 8)).reason, 'duplicate');
+  assert.equal((await app.release('token', claim.leaseId, 7)).ok, true);
+  assert.equal((await app.claim('token', 8)).ok, true);
+});
+
+test('releasing a second claim restores earlier committed cooldown and ordinal', async () => {
+  const app = createWorker(); app.configure();
+  assert.equal((await app.claim('already-sent', 7, 'https://chatgpt.com/c/a', 1)).ok, true);
+  app.clock.now += 30001;
+  const prepared = await app.claim('not-clicked', 7, 'https://chatgpt.com/c/a', 2);
+  assert.equal(prepared.ok, true);
+  assert.equal((await app.release('not-clicked', prepared.leaseId)).ok, true);
+  const ledger = app.saved.get('watchdog:conversation:https://chatgpt.com/c/a');
+  assert.deepEqual(Array.from(ledger.tokens), ['already-sent']);
+  assert.equal(ledger.maxAssistantOrdinal, 1);
+  assert.equal((await app.claim('already-sent')).reason, 'duplicate');
+  assert.equal((await app.claim('different', 7, 'https://chatgpt.com/c/a', 2)).ok, true);
 });

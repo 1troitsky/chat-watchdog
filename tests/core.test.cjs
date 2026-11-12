@@ -241,3 +241,39 @@ test("three exclusive modes normalize independently", () => {
   assert.equal(Core.normalize({ cooldownSeconds: 80 }).cooldownSeconds, 80);
   assert.equal(Core.normalize({ completionAudioName: "done.mp3" }).completionAudioName, "done.mp3");
 });
+
+test('known transport failures are upgraded into previously saved error-word settings', () => {
+  const upgraded = Core.normalize({
+    errorWords: 'Ошибка соединения\nПользовательская ошибка',
+    errorWordsVersion: 1
+  });
+  for (const phrase of [
+    'Время ожидания доставки сообщения истекло. Попробуйте снова',
+    'Вы достигли максимальной длины этого обсуждения',
+    'Failed to fetch', 'Ошибка в потоке сообщений'
+  ]) {
+    assert.ok(upgraded.errorWords.includes(phrase), `missing: ${phrase}`);
+  }
+  assert.ok(upgraded.errorWords.includes('Пользовательская ошибка'));
+  assert.equal(upgraded.errorWordsVersion, 2);
+  assert.equal(Core.normalize(upgraded).errorWords, upgraded.errorWords, 'no duplicates on repeated normalization');
+});
+
+test('transport error lines are detected, while ordinary quoted mentions remain safe', () => {
+  const phrases = Core.normalize().errorWords;
+  assert.equal(Core.findErrorLine('Failed to fetch', phrases), 'Failed to fetch');
+  assert.equal(Core.findErrorLine('Ошибка в потоке сообщений.', phrases), 'Ошибка в потоке сообщений');
+  assert.equal(Core.findErrorLine('Вы достигли максимальной длины этого обсуждения, но можете продолжить обсуждение, начав новый чат', phrases),
+    'Вы достигли максимальной длины этого обсуждения');
+  assert.equal(Core.findSystemErrorLine('Время ожидания доставки сообщения истекло. Попробуйте снова', phrases),
+    'Время ожидания доставки сообщения истекло');
+  assert.equal(Core.findErrorLine('Сообщение цитирует Failed to fetch внутри предложения', phrases), null);
+  assert.equal(Core.findSystemErrorLine('Объясни фразу Failed to fetch', phrases), null);
+});
+
+test('missing-marker alert is strictly opt-in, marker matches start or end', () => {
+  assert.equal(Core.normalize().missingMarkerError, false);
+  assert.equal(Core.normalize({missingMarkerError:true}).missingMarkerError, true);
+  assert.equal(Core.completionMatches('!!!ГОТОВО!!!\nТекст', '!!!ГОТОВО!!!'), true);
+  assert.equal(Core.completionMatches('Текст без маркера', '!!!ГОТОВО!!!'), false);
+});

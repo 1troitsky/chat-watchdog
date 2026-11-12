@@ -25,6 +25,7 @@ function createHarness(options = {}) {
   let sendAvailable = true;
   let stopVisible = false;
   let stopClicks = 0;
+  let claimsMade = 0;
   const jobs = new Map();
 
   function userNode(text, afterReplyId = 0) {
@@ -158,7 +159,14 @@ function createHarness(options = {}) {
         if (msg.type === "CLAIM_SEND") {
           if (claims.has(msg.token)) return { ok: false, reason: "duplicate" };
           claims.add(msg.token);
-          return { ok: true };
+          claimsMade++;
+          if (options.disableSendAfterFirstClaim && claimsMade === 1)
+            sendAvailable = false; // ChatGPT swapped buttons during async worker claim
+          return { ok: true, leaseId: "lease:" + claimsMade, lockedUntil: time + 30000 };
+        }
+        if (msg.type === "RELEASE_UNCLICKED_SEND") {
+          claims.delete(msg.token);
+          return { ok: true, lockedUntil: 0 };
         }
         return msg.type === "GET_CONFIG" ? {
         enabled: true,
@@ -167,6 +175,7 @@ function createHarness(options = {}) {
         marker: options.marker !== undefined ? options.marker : "!!!ГОТОВО!!!",
         reply: "Ок, продолжаем",
         completionAudioName: options.completionAudioName || "",
+        missingMarkerError: options.missingMarkerError === true,
         delaySeconds: options.delaySeconds !== undefined ? options.delaySeconds : 5,
         delaySecondsVersion: 3
       } : null;
@@ -217,6 +226,7 @@ function createHarness(options = {}) {
   return {
     advance, baseline, poll, sendFirst, diagnose,
     clicks: () => clicks,
+    claimsMade: () => claimsMade,
     nextUser() { userMessages.push(userNode("Ок, продолжаем", replyId)); },
     nextAssistant() { replyId++; response = assistantNode(); assistantHistory.push(response); },
     rerenderOldTurn() {
@@ -811,4 +821,76 @@ test("persistent Stop costs five scheduled attempts, then leaves monitor ready f
   await chat.advance(5000);
   await chat.advance(250);
   assert.equal(chat.clicks(), 1);
+});
+
+test('pre-click Send button disappearance releases claim and retries existing Watchdog draft', async () => {
+  const chat = createHarness({disableSendAfterFirstClaim: true});
+  await chat.baseline();
+  await chat.advance(1600);
+  chat.poll();
+  await chat.advance(5000);
+  await chat.advance(300);
+  assert.equal(chat.clicks(), 0, 'must not click a missing Send button');
+  assert.equal(chat.editorText(), 'Ок, продолжаем', 'Watchdog draft should remain available');
+  assert.ok(chat.sentRuntimeMessages.includes('RELEASE_UNCLICKED_SEND'),
+    'reservation must be released before a retry');
+  chat.enableSend(true);
+  chat.poll();
+  await chat.advance(5000);
+  await chat.advance(300);
+  assert.equal(chat.clicks(), 1, 'next scheduled attempt should submit the existing draft');
+  assert.equal(chat.claimsMade(), 2);
+  await chat.advance(90000);
+  chat.poll();
+  assert.equal(chat.clicks(), 1, 'never send duplicates after one click');
+});
+
+test('a human draft identical to the auto-reply is NOT claimed as Watchdog-owned', async () => {
+  const chat = createHarness();
+  await chat.baseline();
+  chat.setEditorText('Ок, продолжаем');
+  await chat.advance(1600);
+  chat.poll();
+  await chat.advance(5000);
+  await chat.advance(300);
+  assert.equal(chat.clicks(), 0, 'never click on an identical human draft');
+  assert.equal(chat.editorText(), 'Ок, продолжаем');
+  assert.equal(chat.claimsMade(), 0);
+});
+
+test('explicit stream failure is recognized even when completion marker is present', async () => {
+  const chat = createHarness({mode:'auto'});
+  await chat.baseline();
+  chat.nextUser(); chat.nextAssistant();
+  chat.setAssistantText('!!!ГОТОВО!!!\nОшибка в потоке сообщений.');
+  chat.poll();
+  assert.equal(chat.sentRuntimeMessages.filter(x => x === 'PLAY_ERROR').length, 1);
+  assert.equal(chat.clicks(), 0);
+});
+
+test('optional missing-marker alert triggers once only after response stabilizes', async () => {
+  const chat = createHarness({ mode:'errors', missingMarkerError:true });
+  await chat.baseline();
+  chat.nextUser(); chat.nextAssistant();
+  chat.setAssistantText('Текст оборвался без специального маркера.');
+  chat.poll();
+  assert.equal(chat.sentRuntimeMessages.filter(x => x === 'PLAY_ERROR').length, 0);
+  await chat.advance(12000);
+  chat.poll();
+  assert.equal(chat.sentRuntimeMessages.filter(x => x === 'PLAY_ERROR').length, 1);
+  await chat.advance(60000);
+  chat.poll();
+  assert.equal(chat.sentRuntimeMessages.filter(x => x === 'PLAY_ERROR').length, 1,
+    'same incomplete reply must not retrigger');
+});
+
+test('missing marker is never an error by default', async () => {
+  const chat = createHarness({mode:'errors'});
+  await chat.baseline();
+  chat.nextUser(); chat.nextAssistant();
+  chat.setAssistantText('Обычный ответ без маркера');
+  chat.poll();
+  await chat.advance(30000);
+  chat.poll();
+  assert.equal(chat.sentRuntimeMessages.filter(x => x === 'PLAY_ERROR').length, 0);
 });

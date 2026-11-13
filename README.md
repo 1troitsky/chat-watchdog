@@ -5,6 +5,7 @@
 - Prefer ChatGPT stable user turn IDs over text+DOM-count fingerprints. Repeated identical messages remain distinct.
 - Reject committed assistant IDs globally; only a proven stable user ID may block a different assistant ID for the same turn. Text-derived legacy user-turn history is not authoritative.
 - Preserve fail-closed ordinal guard for assistant replies without stable IDs, rollback of unclicked claims, audio, three modes, and five-attempt limit.
+- Definitive background duplicate verdicts stop immediately rather than wasting five retries. Transient failures and blocked Send/Stop still use the five-attempt limit.
 
 
 ## 0.2.22 — one active error dialog per tab; errors at reply end only

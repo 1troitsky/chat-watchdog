@@ -987,6 +987,16 @@
             recordEvent("blocked", "Глобальная пауза: ещё " +
               claim.retryAfterSeconds + " с");
             armCooldownWake();
+          } else if (["duplicate", "user-turn-already-handled",
+                      "assistant-already-handled"].includes(claim?.reason)) {
+            // These are definitive deduplication verdicts, not transient UI
+            // failures. Retrying five times can never change the verdict.
+            // Skip this answer, while leaving the observer active for new ones.
+            handled.add(expectedKey);
+            cancelPending();
+            cleanOwnDraft(assistantToken);
+            autoDecision("Фоновая защита: ответ уже обработан (" +
+              lastClaimRejectReason + "); повтор не требуется");
           } else {
             failed("Фоновая защита отклонила отправку (" + lastClaimRejectReason + ")");
           }

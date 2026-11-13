@@ -983,8 +983,8 @@ test("a fresh reply at a recycled assistant ordinal sends after prior success", 
   assert.notEqual(chat.claimMessages[0].userTurnKey, chat.claimMessages[1].userTurnKey);
 });
 
-test("background rejection reason is logged, and stops after exactly five attempts", async () => {
-  const chat = createHarness({ rejectClaimReason: "assistant-already-handled" });
+test("transient background failure is logged, and stops after exactly five attempts", async () => {
+  const chat = createHarness({ rejectClaimReason: "storage-error" });
   await chat.baseline();
   chat.poll();
   await chat.advance(1600);
@@ -997,7 +997,7 @@ test("background rejection reason is logged, and stops after exactly five attemp
   chat.poll();
   assert.equal(chat.clicks(), 0);
   assert.equal(chat.claimMessages.length, 5);
-  assert.equal(chat.diagnose().lastClaimRejectReason, "assistant-already-handled");
+  assert.equal(chat.diagnose().lastClaimRejectReason, "storage-error");
   assert.equal(chat.diagnose().pending, false);
   await chat.advance(100000);
   for (let n = 0; n < 4; n++) chat.poll();
@@ -1048,4 +1048,25 @@ test("legacy repeated user fingerprints cannot block distinct stable assistant I
   // assistant IDs are still distinct, so each user turn can progress.
   const keys = chat.claimMessages.slice(1).map(x => x.userTurnKey);
   assert.equal(new Set(keys).size, 1);
+});
+
+
+test("definitive background duplicates are skipped after one claim, without exhausting retries", async () => {
+  for (const reason of ["duplicate", "assistant-already-handled", "user-turn-already-handled"]) {
+    const chat = createHarness({ rejectClaimReason: reason });
+    await chat.baseline();
+    chat.poll();
+    await chat.advance(1600);
+    chat.poll();
+    await chat.advance(5000);
+    await chat.advance(250);
+    assert.equal(chat.claimMessages.length, 1, reason);
+    assert.equal(chat.clicks(), 0);
+    assert.equal(chat.diagnose().pending, false);
+    assert.match(chat.diagnose().lastAutoDecision, /повтор не требуется/);
+    await chat.advance(100000);
+    for (let i = 0; i < 12; i++) chat.poll();
+    assert.equal(chat.claimMessages.length, 1, "permanent rejection must not retry: " + reason);
+    assert.equal(chat.diagnose().enabled, true);
+  }
 });

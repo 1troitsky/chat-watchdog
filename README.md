@@ -1,5 +1,14 @@
 # Chat Watchdog
 
+## 0.2.26 — detect ChatGPT limit alerts containing recovery buttons
+
+- Recognize an actual `<aside role="alert">` containing the conversation-length error **and** a recovery button (`Начать новый чат`). Match the alert message after removing interactive actions and hidden decorations; the button caption must not become the last error line.
+- Allow a genuine role=alert inside the current assistant turn even when the assistant already ended with `!!!ГОТОВО!!!`. Keep older assistant turns, user messages, code, composers, and broad chat-history wrappers excluded.
+- Keep independent system-error reporting separate from the assistant's **last-line-only** error marker rule. No changes to auto-sending, sound playback, error-dialog ownership, or retry limits.
+- Regression: on 0.2.25, both button-bearing and nested-alert cases fail. On 0.2.26, 154/154 Node tests pass, plus 4 Chromium DOM cases using the supplied aside structure (two positive, two negative). The Chromium test simulates the extension messaging; it is **not** an end-to-end test on live ChatGPT.
+- Optional browser reproduction: `python tests/system-alert-browser.py` (requires Python Playwright and Chromium installed).
+
+
 ## 0.2.25 — standalone ChatGPT system error detection
 
 - Detect a **new** known system error, including the max-conversation-length warning, when ChatGPT renders it as a standalone `<div>` or `<span>` rather than `<p>`, `[role="alert"]`, or a toast.

@@ -52,7 +52,23 @@ function createChat(options = {}) {
     return element;
   }
 
-  let status = node(phrase);
+  const maxLengthError = "Вы достигли максимальной длины этого обсуждения, но можете продолжить обсуждение, начав новый чат.";
+  let status = node(options.alertWithAction ? maxLengthError + "\nНачать новый чат" : phrase);
+  if (options.alertWithAction) {
+    status.getAttribute = name => name === "role" ? "alert" : null;
+    status.cloneNode = () => ({
+      textContent: maxLengthError, // Removing the action button in the cloned alert.
+      querySelectorAll: () => []
+    });
+    status.closest = selector => {
+      if (options.alertInsideUser && selector.includes('[data-user-message-bubble]'))
+        return {};
+      if (options.alertInsideAssistant && selector.includes('[data-message-author-role="assistant"]'))
+        return assistant || {};
+      if (selector.includes('main, [role="main"]')) return {};
+      return null;
+    };
+  }
   // A ChatGPT limit warning can be a plain sibling <div>, not a toast or p.
   // Keep it outside the user/assistant message elements in this harness.
   const systemDiv = options.systemDomText ? node(options.systemDomText) : null;
@@ -139,7 +155,8 @@ function createChat(options = {}) {
           enabled: true, mode: "errors", toastEnabled: true,
           errorWords: [
             "!!!У НАС ПРОБЛЕМА!!!",
-            "!!!ЖДУ РЕШЕНИЕ!!!"
+            "!!!ЖДУ РЕШЕНИЕ!!!",
+            ...(options.alertWithAction ? ["Вы достигли максимальной длины этого обсуждения"] : [])
           ].join("\n")
         } : null;
       }
@@ -193,7 +210,8 @@ function createChat(options = {}) {
     newUser(value) {
       const user = node(value);
       user.compareDocumentPosition = target =>
-        options.systemDomBeforeUser && target === systemDiv ? 2 : 4;
+        (options.systemDomBeforeUser && target === systemDiv) ||
+        (options.oldAlertBeforeUser && target === status) ? 2 : 4;
       users.push(user);
     },
     count(type) { return type === "PLAY_ERROR" ? soundPlayed : sent.filter(x => x === type).length; }
@@ -439,6 +457,57 @@ test('a generic div containing old chat turns cannot masquerade as system error'
     systemDomWrapsHistory: true });
   await app.start();
   app.newUser('Проверка');
+  app.poll();
+  await app.flush();
+  assert.equal(app.dialogCount(), 0);
+  assert.equal(app.count('PLAY_ERROR'), 0);
+});
+
+
+test('exact ChatGPT <aside role=alert> containing a recovery button is recognized after !!!ГОТОВО!!!', async () => {
+  const app = createChat({ alertWithAction: true });
+  await app.start();
+  app.newUser('Продолжай');
+  app.setAssistant('Ответ ИИ\n!!!ГОТОВО!!!');
+  app.showStatus(true);
+  app.poll();
+  await app.flush();
+  assert.equal(app.dialogCount(), 1, 'system error must override completion marker');
+  assert.equal(app.count('PLAY_ERROR'), 1);
+  app.poll();
+  await app.flush();
+  assert.equal(app.dialogCount(), 1, 'one error must not create duplicate dialogs');
+  assert.equal(app.count('PLAY_ERROR'), 1);
+});
+
+test('recovery-button error nested inside current assistant turn is a system alert', async () => {
+  const app = createChat({ alertWithAction: true, alertInsideAssistant: true });
+  await app.start();
+  app.newUser('Продолжай');
+  app.setAssistant('Ответ ИИ\n!!!ГОТОВО!!!');
+  app.showStatus(true);
+  app.poll();
+  await app.flush();
+  assert.equal(app.dialogCount(), 1);
+  assert.equal(app.count('PLAY_ERROR'), 1);
+});
+
+test('old max-length alert before current user is not treated as a new error', async () => {
+  const app = createChat({ alertWithAction: true, oldAlertBeforeUser: true });
+  await app.start();
+  app.newUser('Новый запрос');
+  app.showStatus(true);
+  app.poll();
+  await app.flush();
+  assert.equal(app.dialogCount(), 0);
+  assert.equal(app.count('PLAY_ERROR'), 0);
+});
+
+test('max-length alert inside a user message is ignored', async () => {
+  const app = createChat({ alertWithAction: true, alertInsideUser: true });
+  await app.start();
+  app.newUser('Новый запрос');
+  app.showStatus(true);
   app.poll();
   await app.flush();
   assert.equal(app.dialogCount(), 0);

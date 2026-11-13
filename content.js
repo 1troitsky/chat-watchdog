@@ -578,6 +578,21 @@
     return current;
   }
 
+  // ChatGPT can put a recovery button inside an otherwise standalone alert.
+  // The button's label must not become the "last line" of the error message.
+  // Clone only the alert, remove UI actions/hidden decoration, and match the
+  // remaining message. Never scan the surrounding conversation container.
+  function systemAlertMessage(node) {
+    if (!node || typeof node.cloneNode !== "function") return textOf(node);
+    const copy = node.cloneNode(true);
+    if (typeof copy.querySelectorAll === "function") {
+      for (const action of copy.querySelectorAll(
+        'button, [role="button"], [aria-hidden="true"], script, style'
+      )) action.remove();
+    }
+    return String(copy.textContent || "").trim();
+  }
+
   // Display errors from real site alerts OR a standalone alert phrase in the
   // assistant's latest response. Do not inspect chat-history user messages.
   function isWatchdogUi(node) {
@@ -599,11 +614,22 @@
       // Do not search for substrings in the entire chat/history or an alert
       // wrapper containing unrelated content. Only an explicit final error
       // line within a standalone system notification is eligible.
+      const isAlert = node.getAttribute && node.getAttribute("role") === "alert";
       if (typeof node.closest === "function" && node.closest(
         '[data-user-message-bubble], [data-message-author-role="user"], ' +
-        '[data-message-author-role="assistant"], [data-turn-key], ' +
-        '[contenteditable], [data-composer-input], #chat-watchdog-alert-host'
+        '[contenteditable], [data-composer-input], pre, code, #chat-watchdog-alert-host'
       )) continue;
+      // A system <aside role="alert"> may live *inside* the current assistant
+      // turn, after !!!ГОТОВО!!!. Other nodes inside authored assistant text
+      // are not standalone error notifications.
+      if (typeof node.closest === "function" && node.closest(
+        '[data-message-author-role="assistant"], [data-turn-key], ' +
+        '[data-content-search-unit-key]'
+      ) && !isAlert) continue;
+      const latestUserNode = latestUserTurn().node;
+      if (isAlert && latestUserNode && typeof node.closest === "function" &&
+          node.closest('main, [role="main"]') &&
+          !followsUser(node, latestUserNode)) continue;
       // Some 2026 ChatGPT app shells put role=status on a large container
       // holding chat history. It is not an independent system notification.
       if (typeof node.querySelector === "function" && node.querySelector(
@@ -611,7 +637,8 @@
         '[data-content-search-unit-key]'
       )) continue;
       const rawText = textOf(node).slice(-1000);
-      const matched = Core.findErrorLine(rawText, config.errorWords);
+      const matched = Core.findErrorLine(rawText, config.errorWords) ||
+        (isAlert ? Core.findSystemErrorLine(systemAlertMessage(node), config.errorWords) : null);
       if (!matched) continue;
       const target = specificErrorNode(node, matched);
       const signature = matched + ":" + textOf(target).slice(0, 500);

@@ -71,10 +71,10 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }, alarmState = 
         { tab: { id: tabId, url } }, resolve), true);
     });
   }
-  async function claim(token, tabId = 7, url = "https://chatgpt.com/c/a", assistantOrdinal = 1, userTurnKey = null, assistantStable = false) {
+  async function claim(token, tabId = 7, url = "https://chatgpt.com/c/a", assistantOrdinal = 1, userTurnKey = null, assistantStable = false, userTurnStable = false) {
     return new Promise(resolve => {
       const listening = onMessage(
-        { type: "CLAIM_SEND", token, assistantOrdinal, userTurnKey, assistantStable },
+        { type: "CLAIM_SEND", token, assistantOrdinal, userTurnKey, assistantStable, userTurnStable },
         { tab: { id: tabId, url } },
         resolve
       );
@@ -329,11 +329,11 @@ test("new stable assistant after a new user turn survives DOM ordinal virtualiza
   const app = createWorker(saved);
   app.configure();
   const first = await app.claim("chat|assistant:old", 7, "https://chatgpt.com/c/a", 4,
-    "4:14:fingerprint-old", true);
+    "user:turn-4", true, true);
   assert.equal(first.ok, true);
   app.clock.now += 31000;
   const second = await app.claim("chat|assistant:new", 7, "https://chatgpt.com/c/a", 4,
-    "5:14:fingerprint-new", true);
+    "user:turn-5", true, true);
   assert.equal(second.ok, true, "new response may have the same rendered ordinal");
   const ledger = saved.get("watchdog:conversation:https://chatgpt.com/c/a");
   assert.equal(ledger.maxAssistantOrdinal, 4);
@@ -344,12 +344,12 @@ test("new DOM assistant ID cannot resubmit the SAME user turn, even after cooldo
   const app = createWorker();
   app.configure();
   assert.equal((await app.claim("chat|assistant:a", 7, "https://chatgpt.com/c/a", 4,
-    "5:14:user", true)).ok, true);
+    "user:turn-5", true, true)).ok, true);
   app.clock.now += 90000;
   assert.equal((await app.claim("chat|assistant:rerender", 7, "https://chatgpt.com/c/a", 4,
-    "5:14:user", true)).reason, "user-turn-already-handled");
+    "user:turn-5", true, true)).reason, "user-turn-already-handled");
   assert.equal((await app.claim("chat|assistant:a", 7, "https://chatgpt.com/c/a", 5,
-    "6:14:new-user", true)).reason, "duplicate");
+    "user:turn-6", true, true)).reason, "duplicate");
 });
 
 test("older ledger ordinal collision can migrate after a new identified turn", async () => {
@@ -361,7 +361,7 @@ test("older ledger ordinal collision can migrate after a new identified turn", a
   });
   app.clock.now = 1000000;
   assert.equal((await app.claim("chat|assistant:new", 7, "https://chatgpt.com/c/a", 4,
-    "5:14:user", true)).ok, true);
+    "user:turn-5", true, true)).ok, true);
 });
 
 test("ID-less or absent user identity still uses conservative ordinal protection", async () => {
@@ -370,18 +370,20 @@ test("ID-less or absent user identity still uses conservative ordinal protection
   app.clock.now += 90000;
   assert.equal((await app.claim("second", 7, "https://chatgpt.com/c/a", 4,
     "different-user", false)).reason, "assistant-already-handled");
+  // Stable assistant token alone is sufficient when no user ID is exposed;
+  // the old visible-position guard is reserved for ID-less assistant replies.
   assert.equal((await app.claim("third", 7, "https://chatgpt.com/c/a", 4,
-    null, true)).reason, "assistant-already-handled");
+    null, true)).ok, true);
 });
 
 test("un-clicked claim releases user-turn lock without leaking duplicate permission", async () => {
   const app = createWorker(); app.configure();
   const first = await app.claim("first", 7, "https://chatgpt.com/c/a", 4,
-    "5:14:user", true);
+    "user:turn-5", true, true);
   assert.equal(first.ok, true);
   assert.equal((await app.release("first", first.leaseId)).ok, true);
   const second = await app.claim("second", 7, "https://chatgpt.com/c/a", 4,
-    "5:14:user", true);
+    "user:turn-5", true, true);
   assert.equal(second.ok, true);
 });
 
@@ -520,4 +522,52 @@ test("audio incident is retained after service worker restart", async () => {
   const duplicate = await next.error(7, "https://chatgpt.com/c/a", "incident:X");
   assert.equal(duplicate.reason, "audio-incident-duplicate");
   assert.equal(next.playback.filter(x => x.type === "OFFSCREEN_PLAY").length, 0);
+});
+
+
+test("twenty identical user messages with stable IDs survive recycled ordinals", async () => {
+  const saved = new Map();
+  const app = createWorker(saved); app.configure();
+  for (let i = 0; i < 20; i++) {
+    const r = await app.claim("chat|assistant:unique-" + i, 7,
+      "https://chatgpt.com/c/a", 2, "user:unique-" + i, true, true);
+    assert.equal(r.ok, true, "new user turn " + i + " must not be blocked: " + r.reason);
+    app.clock.now += 31000;
+  }
+  const ledger = saved.get("watchdog:conversation:https://chatgpt.com/c/a");
+  assert.equal(ledger.userTurns.length, 20);
+  assert.equal(new Set(ledger.userTurns).size, 20);
+  assert.equal((await app.claim("chat|assistant:unique-3", 7, "https://chatgpt.com/c/a", 2,
+    "user:unique-21", true, true)).reason, "duplicate");
+  assert.equal((await app.claim("chat|assistant:changed", 7, "https://chatgpt.com/c/a", 2,
+    "user:unique-3", true, true)).reason, "user-turn-already-handled");
+});
+
+test("legacy text-derived user hash is not proof of a duplicate assistant turn", async () => {
+  const app = createWorker(); app.configure();
+  const repeatedFingerprint = "1:14:e7d32c";
+  for (let i = 0; i < 20; i++) {
+    // Identical legacy key and recycled ordinal, but a distinct REAL assistant ID.
+    const r = await app.claim("chat|assistant:real-" + i, 7,
+      "https://chatgpt.com/c/a", 1, repeatedFingerprint, true, false);
+    assert.equal(r.ok, true, "legacy text collision must not block iteration " + i);
+    app.clock.now += 31000;
+  }
+  const ledger = app.saved.get("watchdog:conversation:https://chatgpt.com/c/a");
+  assert.deepEqual(Array.from(ledger.userTurns), []);
+});
+
+test("pre-0.2.24 weak userTurns do not poison upgraded extension", async () => {
+  const saved = new Map();
+  const app = createWorker(saved); app.configure();
+  saved.set("watchdog:conversation:https://chatgpt.com/c/a", {
+    origin: "https://chatgpt.com", tokens: ["chat|assistant:previous"],
+    userTurns: ["1:14:e7d32c", "2:14:abcd"],
+    maxAssistantOrdinal: 5, lastClaimAt: 800000, lockedUntil: 900000
+  });
+  const claim = await app.claim("chat|assistant:new-real-id", 7,
+    "https://chatgpt.com/c/a", 1, "1:14:e7d32c", true, false);
+  assert.equal(claim.ok, true);
+  assert.equal((await app.claim("chat|assistant:previous", 7,
+    "https://chatgpt.com/c/a", 1, "user:actual-new-id", true, true)).reason, "duplicate");
 });

@@ -1,5 +1,12 @@
 # Chat Watchdog
 
+## 0.2.24 — stable message identity
+
+- Prefer ChatGPT stable user turn IDs over text+DOM-count fingerprints. Repeated identical messages remain distinct.
+- Reject committed assistant IDs globally; only a proven stable user ID may block a different assistant ID for the same turn. Text-derived legacy user-turn history is not authoritative.
+- Preserve fail-closed ordinal guard for assistant replies without stable IDs, rollback of unclicked claims, audio, three modes, and five-attempt limit.
+
+
 ## 0.2.22 — one active error dialog per tab; errors at reply end only
 
 - A serialized `CLAIM_ERROR_DIALOG` in the background service worker allows **at most one open Watchdog error modal per browser tab**, even if two content-script observers discover the failure at the same time, before either dialog is closed. The tab-wide lease is released when the user closes the dialog or the page navigates; it does not expire while a visible dialog remains open.

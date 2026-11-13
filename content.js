@@ -143,10 +143,25 @@
       location.hostname === "chat.openai.com";
   }
 
+  // A repeated user phrase is NOT a message identity. Only ChatGPT-provided
+  // DOM turn/message keys are authoritative; text+visible-count is diagnostic
+  // fallback only (it can collide when the virtualized chat window changes).
+  function stableUserTurn(node) {
+    for (const [selector, attribute] of [
+      ["[data-turn-key]", "data-turn-key"],
+      ["[data-message-id]", "data-message-id"],
+      ["[data-content-search-unit-key]", "data-content-search-unit-key"]
+    ]) {
+      const owner = node && typeof node.closest === "function" && node.closest(selector);
+      const value = owner && typeof owner.getAttribute === "function" && owner.getAttribute(attribute);
+      if (typeof value === "string" && value.trim())
+        return "user:" + value.trim();
+    }
+    return null;
+  }
+
   // The current app-shell has multiple account-dependent DOM variants.
-  // Choose a single user-bubble scheme instead of counting nested aliases.
-  // A React rerender can change the node but not the visible turn text or its
-  // ordinal, so this is a stable local identifier for duplicate prevention.
+  // Choose one user-bubble scheme instead of counting nested aliases.
   function latestUserTurn() {
     const schemes = [
       '[data-user-message-bubble="true"]',
@@ -157,12 +172,14 @@
       const nodes = query(selector).filter(visible);
       if (!nodes.length) continue;
       const node = nodes[nodes.length - 1];
+      const stableKey = stableUserTurn(node);
       return {
         node,
-        logicalTurn: Core.userTurnFingerprint(nodes.length, textOf(node))
+        logicalTurn: stableKey || Core.userTurnFingerprint(nodes.length, textOf(node)),
+        stable: !!stableKey
       };
     }
-    return { node: null, logicalTurn: null };
+    return { node: null, logicalTurn: null, stable: false };
   }
 
   function followsUser(assistant, user) {
@@ -247,6 +264,15 @@
     // must NOT turn an old reply into a new send opportunity.
     return route + "|assistant-fallback:" +
       Core.userTurnFingerprint(count || 0, text);
+  }
+
+  function sendGuardTurn(result) {
+    const user = latestUserTurn();
+    // A fingerprint derived from text and visible DOM count is not safe to
+    // use as an exclusive send guard. Stable assistant ID is the next-best
+    // identity. For ID-less assistants, the ordinal fail-closed guard remains.
+    return user.stable ? user.logicalTurn :
+      sendToken(result.node, textOf(result.node), result.count);
   }
 
   function ordinalAlreadyHandled(ordinal, token) {
@@ -837,7 +863,7 @@
     }
     if (ordinalAlreadyHandled(result.ordinal, assistantToken) ||
         submittedAssistantTokens.has(assistantToken) ||
-        sendGuard.alreadySent(text, latestUserTurn().logicalTurn)) {
+        sendGuard.alreadySent(text, sendGuardTurn(result))) {
       autoDecision("Отправка отменена: ответ уже обработан");
       return;
     }
@@ -931,8 +957,9 @@
           failed("Кнопка Stop блокирует отправку");
           return;
         }
-        const userTurn = latestUserTurn().logicalTurn;
-        if (sendGuard.alreadySent(text, userTurn)) return;
+        const user = latestUserTurn();
+        const userTurn = user.logicalTurn;
+        if (sendGuard.alreadySent(text, sendGuardTurn(current))) return;
         // The background worker owns the deduplication ledger for this tab.
         // It serializes claims and persists them in chrome.storage.session,
         // preventing another content-script instance from sending as well.
@@ -944,6 +971,7 @@
           claim = await chrome.runtime.sendMessage({
             type: "CLAIM_SEND", token, assistantOrdinal: current.ordinal,
             userTurnKey: userTurn,
+            userTurnStable: user.stable,
             assistantStable: token.includes("|assistant:")
           });
         } catch (error) {
@@ -998,7 +1026,7 @@
         // processing. Never release this token after the click attempt.
         submittedAssistantTokens.add(token);
         lastClaimedAssistantOrdinal = Math.max(lastClaimedAssistantOrdinal, current.ordinal);
-        sendGuard.record(text, userTurn);
+        sendGuard.record(text, sendGuardTurn(current));
         lastUserTurnAtSend = userTurn;
         handled.add(expectedKey);
         lastClickAt = Date.now();
@@ -1115,7 +1143,7 @@
       ordinalAlreadyHandled(result.ordinal, sendToken(result.node, text, result.count)) ||
       submittedAssistantTokens.has(sendToken(result.node, text, result.count)) ||
       !Core.completionMatches(text, config.marker, config.markerRegex) ||
-      sendGuard.alreadySent(text, latestUserTurn().logicalTurn)) return;
+      sendGuard.alreadySent(text, sendGuardTurn(result))) return;
     const assistantToken = sendToken(result.node, text, result.count);
     if ((attemptsByAssistant.get(assistantToken) || 0) >= 5) {
       if (!exhaustedAssistantTokens.has(assistantToken)) {
@@ -1178,7 +1206,7 @@
       assistantFollowsLastUser: !!lastAssistant &&
         followsUser(lastAssistant, latestUserTurn().node),
       markerAlreadySent: !!lastAssistant &&
-        sendGuard.alreadySent(textOf(lastAssistant), latestUserTurn().logicalTurn),
+        sendGuard.alreadySent(textOf(lastAssistant), sendGuardTurn(latestAssistant(selectors.assistant))),
       logicalUserTurnDetected: !!latestUserTurn().logicalTurn,
       sendClicks,
       rememberedAssistantReplies: submittedAssistantTokens.size,

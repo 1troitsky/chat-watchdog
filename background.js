@@ -97,7 +97,7 @@ function nextAudioEpoch(tabId, kind = "error") {
 
 // Atomic per-tab claims across all injected scripts. The ledger survives
 // service-worker suspension and content-script reinjection during this session.
-async function claimSend(tabId, token, assistantOrdinal, sender, userTurnKey, assistantStable) {
+async function claimSend(tabId, token, assistantOrdinal, sender, userTurnKey, assistantStable, userTurnStable) {
   if (typeof token !== "string" || !token || token.length > 2048 ||
       !Number.isSafeInteger(assistantOrdinal) ||
       assistantOrdinal < 1 || assistantOrdinal > 1000000) {
@@ -120,20 +120,19 @@ async function claimSend(tabId, token, assistantOrdinal, sender, userTurnKey, as
     const seen = prior && prior.origin === config.origin && Array.isArray(prior.tokens) ?
       prior.tokens : [];
     if (seen.includes(token)) return { ok: false, reason: "duplicate" };
-    // Assistant ordinal is only the position in the *currently rendered* DOM.
-    // ChatGPT can virtualize older turns, so a genuinely new reply can reuse
-    // an ordinal. A stable assistant ID PLUS a distinct logical user turn is
-    // stronger evidence than the (possibly recycled) ordinal.
-    const identified = assistantStable === true &&
-      typeof userTurnKey === "string" && userTurnKey.length > 0 &&
-      userTurnKey.length <= 1024;
+    // Visible DOM ordinals and content fingerprints can be recycled across
+    // distinct turns, especially when the user repeats "Ок, продолжаем".
+    // Only genuine ChatGPT user-turn IDs may be recorded and compared.
+    const identified = assistantStable === true && userTurnStable === true &&
+      typeof userTurnKey === "string" && userTurnKey.startsWith("user:") &&
+      userTurnKey.length > 5 && userTurnKey.length <= 1024;
     const knownUserTurns = prior && prior.origin === config.origin &&
       Array.isArray(prior.userTurns) ? prior.userTurns : [];
     if (identified && knownUserTurns.includes(userTurnKey))
       return { ok: false, reason: "user-turn-already-handled" };
-    // Keep the ordinal guard for older clients, ID-less replies, and pages
-    // where there is no identifiable user turn (fail closed, no duplicates).
-    if (!identified && prior && prior.origin === config.origin &&
+    // Stable assistant message IDs are individually deduplicated via tokens.
+    // Fail closed using the DOM ordinal only when the assistant lacks an ID.
+    if (assistantStable !== true && prior && prior.origin === config.origin &&
         Number.isSafeInteger(prior.maxAssistantOrdinal) &&
         assistantOrdinal <= prior.maxAssistantOrdinal) {
       return { ok: false, reason: "assistant-already-handled",
@@ -360,7 +359,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message.type === "CLAIM_SEND") {
     claimSend(tabId, message.token, message.assistantOrdinal, sender,
-      message.userTurnKey, message.assistantStable)
+      message.userTurnKey, message.assistantStable, message.userTurnStable)
       .then(sendResponse)
       .catch(() => sendResponse({ ok: false, reason: "storage-error" }));
     return true;

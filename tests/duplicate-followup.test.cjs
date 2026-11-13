@@ -21,6 +21,7 @@ function createHarness(options = {}) {
   const sentRuntimeMessages = [];
   const claims = options.claims || new Set();
   let errorVisible = false;
+  let nextUserId = 0;
   let userMessages = [userNode("Ну давай пиши готово")];
   let sendAvailable = true;
   let stopVisible = false;
@@ -29,10 +30,16 @@ function createHarness(options = {}) {
   const claimMessages = [];
   const jobs = new Map();
 
-  function userNode(text, afterReplyId = 0) {
+  function userNode(text, afterReplyId = 0, stableId = null) {
+    const id = stableId || "stable-user-" + (++nextUserId);
     return {
       innerText: text,
       afterReplyId,
+      stableId: id,
+      closest(selector) {
+        return options.stableUserIds && selector === "[data-turn-key]" ? this : null;
+      },
+      getAttribute(name) { return name === "data-turn-key" ? id : null; },
       getClientRects: () => [1],
       compareDocumentPosition(other) {
         // The latest user bubble follows the preceding answer but precedes
@@ -235,10 +242,11 @@ function createHarness(options = {}) {
     clicks: () => clicks,
     claimsMade: () => claimsMade, claimMessages,
     nextUser() { userMessages.push(userNode("Ок, продолжаем", replyId)); },
+    keepLastUserOnly() { userMessages = userMessages.slice(-1); },
     nextAssistant() { replyId++; response = assistantNode(); assistantHistory.push(response); },
     virtualizeNextAssistant() { replyId++; response = assistantNode(); assistantHistory[assistantHistory.length - 1] = response; },
     rerenderOldTurn() {
-      userMessages = userMessages.map(item => userNode(item.innerText, item.afterReplyId));
+      userMessages = userMessages.map(item => userNode(item.innerText, item.afterReplyId, item.stableId));
       response = assistantNode();
       assistantHistory[assistantHistory.length - 1] = response;
     },
@@ -995,4 +1003,49 @@ test("background rejection reason is logged, and stops after exactly five attemp
   for (let n = 0; n < 4; n++) chat.poll();
   assert.equal(chat.claimMessages.length, 5);
   assert.equal(chat.diagnose().enabled, true);
+});
+
+
+test("twenty identical auto-continue user bubbles send next reply with stable turn keys", async () => {
+  const chat = createHarness({ stableUserIds: true });
+  await chat.sendFirst();
+  for (let i = 0; i < 20; i++) {
+    await chat.advance(46000); // Respect the 30-second post-send cooldown.
+    chat.nextUser();
+    chat.keepLastUserOnly(); // Simulate the app virtualizing the conversation.
+    chat.nextAssistant();
+    chat.poll();
+    await chat.advance(1600);
+    chat.poll();
+    await chat.advance(5000);
+    await chat.advance(250);
+    assert.equal(chat.clicks(), i + 2, "reply " + i + " must submit, even with identical text");
+    const claim = chat.claimMessages.at(-1);
+    assert.equal(claim.userTurnStable, true);
+    assert.match(claim.userTurnKey, /^user:stable-user-/);
+    assert.equal(claim.assistantStable, true);
+  }
+  assert.equal(new Set(chat.claimMessages.map(x => x.userTurnKey)).size, 21);
+});
+
+test("legacy repeated user fingerprints cannot block distinct stable assistant IDs", async () => {
+  const chat = createHarness(); // No user turn keys in this layout.
+  await chat.sendFirst();
+  for (let i = 0; i < 5; i++) {
+    await chat.advance(46000); // Respect the 30-second post-send cooldown.
+    chat.nextUser();
+    chat.keepLastUserOnly();
+    chat.nextAssistant();
+    chat.poll();
+    await chat.advance(1600);
+    chat.poll();
+    await chat.advance(5000);
+    await chat.advance(250);
+    assert.equal(chat.clicks(), i + 2);
+    assert.equal(chat.claimMessages.at(-1).userTurnStable, false);
+  }
+  // Identical visible text and count -> exactly the same legacy fingerprint;
+  // assistant IDs are still distinct, so each user turn can progress.
+  const keys = chat.claimMessages.slice(1).map(x => x.userTurnKey);
+  assert.equal(new Set(keys).size, 1);
 });

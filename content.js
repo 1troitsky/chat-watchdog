@@ -582,12 +582,15 @@
   // The button's label must not become the "last line" of the error message.
   // Clone only the alert, remove UI actions/hidden decoration, and match the
   // remaining message. Never scan the surrounding conversation container.
+  // Text matching is independent of the HTML element used to render a
+  // notification. Strip controls (such as "Start new chat") before matching.
+  // Never use broad document/turn text to infer that the user got an error.
   function systemAlertMessage(node) {
     if (!node || typeof node.cloneNode !== "function") return textOf(node);
     const copy = node.cloneNode(true);
     if (typeof copy.querySelectorAll === "function") {
       for (const action of copy.querySelectorAll(
-        'button, [role="button"], [aria-hidden="true"], script, style'
+        'button, [role="button"], [aria-hidden="true"], input, textarea, nav, script, style'
       )) action.remove();
     }
     return String(copy.textContent || "").trim();
@@ -605,83 +608,129 @@
       !!element.closest("#chat-watchdog-alert-host, [data-chat-watchdog-toast]");
   }
 
+  const SYSTEM_CANDIDATE_SELECTOR = 'div, span, p, aside, section, li, [role="paragraph"]';
+  const SYSTEM_NOTICE_SELECTOR =
+    '[role="alert"], [role="status"], [aria-live="assertive"], ' +
+    '[data-sonner-toast], [data-testid*="error"], ' +
+    '.toast, .error-banner, .alert-danger, [data-state="error"]';
+  const AUTHOR_CONTAINER_SELECTOR =
+    '[data-message-author-role="assistant"], [data-message-role="assistant"], ' +
+    '[data-role="assistant"], [data-message-author="assistant"], ' +
+    '[data-testid="assistant-message"], [data-content-search-unit-key$=":assistant"], ' +
+    '[data-content-search-unit-key$=":assistant:final"], ' +
+    '.font-claude-message, model-response, .model-response, .ds-markdown';
+  const USER_CONTAINER_SELECTOR =
+    '[data-user-message-bubble], [data-message-author-role="user"], ' +
+    '[data-message-role="user"], [data-content-search-unit-key$=":user"], ' +
+    '[data-testid="user-message"]';
+  // Some providers don't expose user-turn IDs. On those pages, text-only
+  // notifications must be NEW or CHANGED since observation began: otherwise a
+  // historical quote containing an exact error phrase may fire at startup.
+  let systemBaselineReady = false;
+  let observedSystemText = new WeakMap();
+  const recentlyChangedSystemNodes = new Set();
+
+  function systemTextMatch(node, explicit) {
+    const raw = String(node && (node.textContent || textOf(node)) || "");
+    if (!raw || raw.length > 900 || !Core.findError(raw, config.errorWords)) return null;
+    const cleaned = systemAlertMessage(node).replace(/\s+/g, " ").trim();
+    if (!cleaned || cleaned.length > 500) return null;
+    // A complete system notice can have a recovery action removed from it.
+    // Generic user-configured phrases also work, but never match substrings
+    // from an arbitrary message or entire transcript container.
+    return Core.findSystemErrorLine(cleaned, config.errorWords) ||
+      Core.findErrorLine(cleaned, config.errorWords);
+  }
+
+  function systemCandidateAllowed(node, explicit, currentUser, currentReply) {
+    if (!visible(node) || isWatchdogUi(node)) return false;
+    if (typeof node.closest === "function") {
+      if (node.closest(USER_CONTAINER_SELECTOR + ', [contenteditable], ' +
+          '[data-composer-input], form, pre, code, #chat-watchdog-alert-host')) return false;
+      if (!explicit && node.closest('nav, header, footer, [role="dialog"], button')) return false;
+      const authored = node.closest(AUTHOR_CONTAINER_SELECTOR);
+      // Explicit UI notifications inside the currently active assistant turn
+      // are allowed; ordinary text inside any assistant message is not.
+      if (authored && (!explicit || !currentReply ||
+          (authored !== currentReply &&
+           !(typeof currentReply.contains === "function" && currentReply.contains(authored)))))
+        return false;
+    }
+    // Never read large wrappers containing history as independent errors.
+    if (typeof node.querySelector === "function" && node.querySelector(
+      USER_CONTAINER_SELECTOR + ', ' + AUTHOR_CONTAINER_SELECTOR +
+      ', [data-turn-key], [data-content-search-unit-key], [contenteditable]')) return false;
+    if (!explicit && currentUser && !followsUser(node, currentUser)) {
+      // Some providers mount newly-created toast portals BEFORE <main> in
+      // DOM order. A fresh mutation outside the conversation is still a new
+      // notice; a pre-existing element or an old in-chat quote is not.
+      const outsideChat = typeof node.closest === "function" &&
+        !node.closest('main, [role="main"]');
+      if (!(outsideChat && recentlyChangedSystemNodes.has(node))) return false;
+    }
+    // Role-based notifications in portals can precede the chat in DOM order;
+    // within main, however, a notification before the latest user is stale.
+    if (explicit && currentUser && typeof node.closest === "function" &&
+        node.closest('main, [role="main"]') && !followsUser(node, currentUser)) return false;
+    return true;
+  }
+
   function checkError() {
-    const selector = config.errorSelector ||
-      '[role="alert"], [role="status"], [data-sonner-toast], [data-testid*="error"], .toast, .error-banner';
-    const matches = [];
-    for (const node of query(selector)) {
-      if (!visible(node) || isWatchdogUi(node)) continue;
-      // Do not search for substrings in the entire chat/history or an alert
-      // wrapper containing unrelated content. Only an explicit final error
-      // line within a standalone system notification is eligible.
-      const isAlert = node.getAttribute && node.getAttribute("role") === "alert";
-      if (typeof node.closest === "function" && node.closest(
-        '[data-user-message-bubble], [data-message-author-role="user"], ' +
-        '[contenteditable], [data-composer-input], pre, code, #chat-watchdog-alert-host'
-      )) continue;
-      // A system <aside role="alert"> may live *inside* the current assistant
-      // turn, after !!!ГОТОВО!!!. Other nodes inside authored assistant text
-      // are not standalone error notifications.
-      if (typeof node.closest === "function" && node.closest(
-        '[data-message-author-role="assistant"], [data-turn-key], ' +
-        '[data-content-search-unit-key]'
-      ) && !isAlert) continue;
-      const latestUserNode = latestUserTurn().node;
-      if (isAlert && latestUserNode && typeof node.closest === "function" &&
-          node.closest('main, [role="main"]') &&
-          !followsUser(node, latestUserNode)) continue;
-      // Some 2026 ChatGPT app shells put role=status on a large container
-      // holding chat history. It is not an independent system notification.
-      if (typeof node.querySelector === "function" && node.querySelector(
-        '[data-user-message-bubble], [data-message-author-role], [data-turn-key], ' +
-        '[data-content-search-unit-key]'
-      )) continue;
-      const rawText = textOf(node).slice(-1000);
-      const matched = Core.findErrorLine(rawText, config.errorWords) ||
-        (isAlert ? Core.findSystemErrorLine(systemAlertMessage(node), config.errorWords) : null);
-      if (!matched) continue;
-      const target = specificErrorNode(node, matched);
-      const signature = matched + ":" + textOf(target).slice(0, 500);
-      matches.push({ node: target, signature, phrase: matched });
-    }
-    // ChatGPT sometimes renders transport failures as standalone <div>/<span>
-    // blocks (no role=alert, data-testid or <p>). Detect *only* a complete,
-    // known system error in a recent independent block after the latest user
-    // turn. Never scan the text of the conversation's outer containers.
     const currentUser = latestUserTurn().node;
-    if (isChatGPT() && currentUser) {
-      const alreadyMatched = new Set(matches.map(entry => entry.node));
-      // Limit to the newest page elements, avoiding a costly full-history text
-      // scan during the 1.5s polling cycle. Toasts with explicit roles were
-      // already handled above regardless of their page position.
-      for (const node of query('div, span, p, [role="paragraph"]').slice(-900)) {
-        if (alreadyMatched.has(node) || !visible(node) || isWatchdogUi(node) ||
-            !followsUser(node, currentUser)) continue;
-        if (typeof node.closest === "function" && node.closest(
-          '[data-user-message-bubble], [data-message-author-role="user"], ' +
-          '[data-message-author-role="assistant"], [data-turn-key], ' +
-          '[data-content-search-unit-key], [contenteditable], ' +
-          '[data-composer-input], form, nav, aside, header, footer, ' +
-          '[role="dialog"], [role="alert"], [role="status"], ' +
-          'pre, code, button, #chat-watchdog-alert-host')) continue;
-        if (typeof node.querySelector === "function" && node.querySelector(
-          '[data-user-message-bubble], [data-message-author-role], ' +
-          '[data-turn-key], [data-content-search-unit-key], ' +
-          '[contenteditable], [data-composer-input]')) continue;
-        // A container may have hundreds of old messages. Its textContent is
-        // a cheap upper bound before consulting layout-backed innerText.
-        if (String(node.textContent || "").length > 500) continue;
-        const text = textOf(node);
-        const phrase = Core.findSystemErrorLine(text, config.errorWords);
-        if (!phrase) continue;
-        // Prefer the leaf block, not both the leaf and its wrappers. System
-        // messages can use several nested spans to construct one sentence.
-        if (node.children && Array.from(node.children).some(child =>
-          Core.findSystemErrorLine(textOf(child), config.errorWords))) continue;
-        matches.push({ node, signature: "system:" + phrase + ":" + text.slice(0, 500), phrase });
-        alreadyMatched.add(node);
-      }
+    const currentReply = latestAssistant(currentSelectors().assistant).node;
+    const explicitNodes = new Set([
+      ...query(SYSTEM_NOTICE_SELECTOR).slice(-800),
+      ...query(config.errorSelector).slice(-800)
+    ]);
+    const matches = [];
+    const matchedTargets = new Set();
+    // First look at semantic UI notices on ANY provider: role, aria-live,
+    // toast classes and custom CSS selectors. Custom selectors are additive:
+    // an invalid override must not silently disable the built-in detector.
+    for (const node of explicitNodes) {
+      if (!systemCandidateAllowed(node, true, currentUser, currentReply)) continue;
+      const phrase = systemTextMatch(node, true);
+      if (!phrase) continue;
+      const target = specificErrorNode(node, phrase);
+      if (matchedTargets.has(target)) continue;
+      matchedTargets.add(target);
+      matches.push({node: target,
+        signature: "notice:" + phrase + ":" + systemAlertMessage(target).slice(0, 500), phrase});
     }
+    // The same error may be a plain <div>, <span>, <p>, <section>, <li>,
+    // or <aside> with NO role/class. Search for exact configured errors on
+    // supported and custom sites alike, with strict author/history exclusions.
+    // DOM mutations additionally cover portals inserted before the chat.
+    const candidates = new Set([
+      ...query(SYSTEM_CANDIDATE_SELECTOR).slice(-1400),
+      ...recentlyChangedSystemNodes
+    ]);
+    for (const node of candidates) {
+      if (!node || matchedTargets.has(node)) continue;
+      const raw = String(node.textContent || textOf(node) || "");
+      const priorText = observedSystemText.get(node);
+      observedSystemText.set(node, raw.slice(0, 900));
+      // Most elements on a large chat page contain no known error text.
+      // Avoid expensive layout/ancestor checks for those elements.
+      if (raw.length > 900 || !Core.findError(raw, config.errorWords)) continue;
+      if (!systemCandidateAllowed(node, false, currentUser, currentReply)) continue;
+      // Without a known user turn, only a NEW/CHANGED free-standing message
+      // can alert; don't wake up to yesterday's error on initial activation.
+      if (!currentUser && !recentlyChangedSystemNodes.has(node) &&
+          (!systemBaselineReady || priorText === undefined ||
+           priorText === raw.slice(0, 900))) continue;
+      const phrase = systemTextMatch(node, false);
+      if (!phrase) continue;
+      const target = specificErrorNode(node, phrase);
+      if (matchedTargets.has(target)) continue;
+      // If the error also appears in a nested leaf, prefer that leaf over a
+      // parent. Dedupe by node and later by logical error incident.
+      matchedTargets.add(target);
+      const signature = "system:" + phrase + ":" + systemAlertMessage(target).slice(0, 500);
+      matches.push({node: target, signature, phrase});
+    }
+    systemBaselineReady = true;
+    recentlyChangedSystemNodes.clear();
     const lastReply = latestAssistant(currentSelectors().assistant).node;
     let assistantErrorActive = false;
     if (lastReply && visible(lastReply) && !isWatchdogUi(lastReply)) {
@@ -1131,6 +1180,9 @@
       closeDialog();
       errorTracker.reset();
       acknowledgedAssistantAlerts.clear();
+      systemBaselineReady = false;
+      observedSystemText = new WeakMap();
+      recentlyChangedSystemNodes.clear();
       completionInitialized = false;
       completionCandidate = null;
       completionNotified.clear();
@@ -1362,6 +1414,9 @@
       closeDialog();
     }
     if (!wasEnabled && config.enabled) {
+      systemBaselineReady = false;
+      observedSystemText = new WeakMap();
+      recentlyChangedSystemNodes.clear();
       hydrateCooldown();
       route = location.href;
       seenInitial = false;
@@ -1388,6 +1443,19 @@
     return !!Core.findError(String(content || "").slice(0, 1000), config.errorWords);
   }
 
+  function rememberSystemMutation(node) {
+    const element = node && (node.nodeType === 3 ? node.parentNode : node);
+    if (!element || isWatchdogUi(element)) return;
+    recentlyChangedSystemNodes.add(element);
+    if (typeof element.querySelectorAll === "function") {
+      for (const child of Array.from(element.querySelectorAll(SYSTEM_CANDIDATE_SELECTOR)).slice(-100))
+        recentlyChangedSystemNodes.add(child);
+    }
+    if (recentlyChangedSystemNodes.size > 400)
+      for (const old of Array.from(recentlyChangedSystemNodes).slice(0, 200))
+        recentlyChangedSystemNodes.delete(old);
+  }
+
   function inspectMutations(records) {
     if (config.enabled) {
       for (const record of records) {
@@ -1399,11 +1467,13 @@
           // contains the error phrase, so watching them created a feedback loop.
           const textRemoved = removed.some(errorTextIn);
           const textAdded = added.some(errorTextIn);
+          for (const node of added) rememberSystemMutation(node);
           for (const node of removed) errorTracker.forgetSubtree(node);
           // The tracker only re-arms an error if a mutation happens INSIDE
           // the actual error node, never merely somewhere inside the page.
           if (textRemoved || textAdded) errorTracker.markUpdated(record.target);
         } else if (record.type === "characterData") {
+          rememberSystemMutation(record.target);
           if (errorTextIn(record.target)) {
             errorTracker.markUpdated(record.target.parentNode);
           }

@@ -12,6 +12,7 @@ function createChat(options = {}) {
   let now = 10000, nextTimer = 0;
   let poll, inspectMutations, keydown;
   let statusVisible = false;
+  let systemVisible = !options.systemInitiallyHidden;
   let assistant = null;
   let users = [];
   const jobs = new Map();
@@ -96,14 +97,15 @@ function createChat(options = {}) {
     body,
     querySelector: () => null,
     querySelectorAll(selector) {
-      if (selector === 'div, span, p, [role="paragraph"]')
-        return systemDiv ? [systemDiv] : [];
+      if (selector.startsWith('div, span, p'))
+        return systemDiv && systemVisible ? [systemDiv] : [];
       if (selector === "#chat-watchdog-alert-host")
         return ui.filter(n => n.id === "chat-watchdog-alert-host");
       if (selector === "[data-chat-watchdog-toast]") {
         return ui.filter(n => n.getAttribute("data-chat-watchdog-toast") !== null);
       }
-      if (selector.startsWith('[data-user-message-bubble="true"]')) return users;
+      if (selector.startsWith('[data-user-message-bubble="true"]'))
+        return options.noUserDom ? [] : users;
       if (selector.startsWith('[role="alert"], [role="status"]')) return statusVisible ? [status] : [];
       if (selector.includes('[data-message-author-role="assistant"]')) return assistant ? [assistant] : [];
       return [];
@@ -114,7 +116,8 @@ function createChat(options = {}) {
   };
   const context = {
     document, Set, Map, WeakMap, Promise, console,
-    location: { hostname: "chatgpt.com", href: "https://chatgpt.com/c/test" },
+    location: { hostname: options.hostname || "chatgpt.com",
+      href: "https://" + (options.hostname || "chatgpt.com") + "/c/test" },
     Date: class extends Date { static now() { return now; } },
     getComputedStyle: () => ({ visibility: "visible" }),
     setTimeout(fn, delay) {
@@ -156,7 +159,8 @@ function createChat(options = {}) {
           errorWords: [
             "!!!У НАС ПРОБЛЕМА!!!",
             "!!!ЖДУ РЕШЕНИЕ!!!",
-            ...(options.alertWithAction ? ["Вы достигли максимальной длины этого обсуждения"] : [])
+            ...(options.alertWithAction ? ["Вы достигли максимальной длины этого обсуждения"] : []),
+            ...(options.customErrorWord ? [options.customErrorWord] : [])
           ].join("\n")
         } : null;
       }
@@ -204,6 +208,20 @@ function createChat(options = {}) {
       body.appendChild(host);
     },
     showStatus(value) { statusVisible = value; },
+    showSystemError(value) {
+      systemVisible = value;
+      if (value && systemDiv) inspectMutations([{
+        type: "childList", target: body, addedNodes: [systemDiv], removedNodes: []
+      }]);
+    },
+    changeSystemText(value) {
+      if (!systemDiv) return;
+      systemDiv.innerText = value;
+      systemDiv.textContent = value;
+      inspectMutations([{type: "characterData", target: {
+        nodeType: 3, nodeValue: value, parentNode: systemDiv
+      }}]);
+    },
     changeStatus(value) { status.innerText = value; status.textContent = value; },
     recreateStatus() { status = node(phrase); },
     setAssistant(value) { assistant = node(value); assistant.closest = () => null; },
@@ -512,4 +530,64 @@ test('max-length alert inside a user message is ignored', async () => {
   await app.flush();
   assert.equal(app.dialogCount(), 0);
   assert.equal(app.count('PLAY_ERROR'), 0);
+});
+
+
+test("Claude standalone plain div error is detected when added after monitoring began", async () => {
+  const app = createChat({hostname: "claude.ai", noUserDom: true,
+    systemDomText: "Failed to fetch", systemInitiallyHidden: true});
+  await app.start();
+  app.showSystemError(true);
+  app.poll();
+  await app.flush();
+  assert.equal(app.dialogCount(), 1);
+  assert.equal(app.count("PLAY_ERROR"), 1);
+  app.poll(); await app.flush();
+  assert.equal(app.dialogCount(), 1);
+  assert.equal(app.count("PLAY_ERROR"), 1);
+});
+
+test("Gemini reused plain div error is detected when text changes", async () => {
+  const app = createChat({hostname: "gemini.google.com", noUserDom: true,
+    systemDomText: "Ожидание ответа"});
+  await app.start();
+  app.changeSystemText("Unknown error");
+  app.poll(); await app.flush();
+  assert.equal(app.dialogCount(), 1);
+  assert.equal(app.count("PLAY_ERROR"), 1);
+});
+
+test("unknown provider with pre-existing plain system error does not replay history", async () => {
+  const app = createChat({hostname: "chat.other.example", noUserDom: true,
+    systemDomText: "Failed to fetch"});
+  await app.start();
+  app.poll(); await app.flush();
+  assert.equal(app.dialogCount(), 0, "initial plain text has no freshness evidence");
+  assert.equal(app.count("PLAY_ERROR"), 0);
+  app.changeSystemText("Unknown error");
+  app.poll(); await app.flush();
+  assert.equal(app.dialogCount(), 1, "a changed notification must alert");
+  assert.equal(app.count("PLAY_ERROR"), 1);
+});
+
+test("Claude new system error within a user-authored message is ignored", async () => {
+  const app = createChat({hostname: "claude.ai", noUserDom: true,
+    systemDomInsideUser: true, systemDomText: "Failed to fetch", systemInitiallyHidden: true});
+  await app.start();
+  app.showSystemError(true);
+  app.poll(); await app.flush();
+  assert.equal(app.dialogCount(), 0);
+  assert.equal(app.count("PLAY_ERROR"), 0);
+});
+
+
+test("custom error phrase is detected in an untagged notice on another provider", async () => {
+  const app = createChat({hostname: "chat.other.example", noUserDom: true,
+    customErrorWord: "Provider quota exceeded", systemDomText: "Provider quota exceeded",
+    systemInitiallyHidden: true});
+  await app.start();
+  app.showSystemError(true);
+  app.poll(); await app.flush();
+  assert.equal(app.dialogCount(), 1);
+  assert.equal(app.count("PLAY_ERROR"), 1);
 });

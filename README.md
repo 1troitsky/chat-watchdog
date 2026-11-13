@@ -1,5 +1,15 @@
 # Chat Watchdog
 
+## 0.2.27 — provider-independent system error recognition
+
+- Detect **new system notices across supported and custom chat sites** regardless of HTML tag (`div`, `span`, `p`, `aside`, `section`, `li`) or the presence of `role="alert"`. ARIA live regions, toast elements, and user-defined error selectors are also supported; custom selectors are **additive** rather than replacing the built-ins.
+- Match configured full error messages, not arbitrary substrings of chat history. Ignore buttons (such as «Начать новый чат»), decorative hidden text, user messages, editors, code, and old assistant messages. Ordinary assistant replies are still checked only at the end of the **latest** reply; a separate system notice can be detected even when the reply contains `!!!ГОТОВО!!!`.
+- On pages without a recognized user turn, untagged notifications must **appear or change during observation** to avoid alarming on a historical quote when the extension starts. A new notification inserted into a portal before the chat container is eligible if it appears after monitoring begins. Built-in notifications work regardless of where their container is mounted.
+- The existing one-dialog/one-sound-per-incident safeguards, audio files, three modes, and five-send-attempt policy are unchanged. Detection on previously unseen providers is best effort: unstructured UIs may still need a custom error selector.
+- Regression: 159 Node tests plus 11 Chromium DOM fixtures (not live provider sites). The browser fixtures exercise the actual content script with a simulated extension background.
+- Run: `node --test tests/*.test.cjs`; optional `python tests/cross-provider-system-browser.py` (Python Playwright + Chromium required).
+
+
 ## 0.2.26 — detect ChatGPT limit alerts containing recovery buttons
 
 - Recognize an actual `<aside role="alert">` containing the conversation-length error **and** a recovery button (`Начать новый чат`). Match the alert message after removing interactive actions and hidden decorations; the button caption must not become the last error line.
@@ -23,14 +33,6 @@
 - Reject committed assistant IDs globally; only a proven stable user ID may block a different assistant ID for the same turn. Text-derived legacy user-turn history is not authoritative.
 - Preserve fail-closed ordinal guard for assistant replies without stable IDs, rollback of unclicked claims, audio, three modes, and five-attempt limit.
 - Definitive background duplicate verdicts stop immediately rather than wasting five retries. Transient failures and blocked Send/Stop still use the five-attempt limit.
-
-
-## 0.2.22 — one active error dialog per tab; errors at reply end only
-
-- A serialized `CLAIM_ERROR_DIALOG` in the background service worker allows **at most one open Watchdog error modal per browser tab**, even if two content-script observers discover the failure at the same time, before either dialog is closed. The tab-wide lease is released when the user closes the dialog or the page navigates; it does not expire while a visible dialog remains open.
-- Error phrases in an assistant response are matched only on the **last nonempty line of the latest reply**. An error marker quoted earlier in a reply no longer creates an alert. Standalone system alerts still work, but large status containers containing chat history and old system paragraphs before the newest user turn are excluded.
-- Modal ownership and rejections are independent of audio and automatic sending; bundled sounds, sending rules, and all three modes are unchanged.
-- New concurrency and marker-order regression tests simulate two independent observers trying to open the same modal *before any dismissal*.
 
 
 ## 0.2.21 — bundled error sound and repeated-dialog hotfix

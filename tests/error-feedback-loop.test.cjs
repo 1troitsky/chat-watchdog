@@ -53,6 +53,15 @@ function createChat(options = {}) {
   }
 
   let status = node(phrase);
+  // A ChatGPT limit warning can be a plain sibling <div>, not a toast or p.
+  // Keep it outside the user/assistant message elements in this harness.
+  const systemDiv = options.systemDomText ? node(options.systemDomText) : null;
+  if (systemDiv) {
+    systemDiv.closest = selector => options.systemDomInsideUser &&
+      selector.includes('[data-user-message-bubble]') ? {} : null;
+    if (options.systemDomWrapsHistory)
+      systemDiv.querySelector = () => node('old message');
+  }
   if (options.statusWrapsHistory) status.querySelector = () => node('old chat turn');
   const body = {
     contains(other) { return other === status || other === assistant || ui.includes(other); },
@@ -71,6 +80,8 @@ function createChat(options = {}) {
     body,
     querySelector: () => null,
     querySelectorAll(selector) {
+      if (selector === 'div, span, p, [role="paragraph"]')
+        return systemDiv ? [systemDiv] : [];
       if (selector === "#chat-watchdog-alert-host")
         return ui.filter(n => n.id === "chat-watchdog-alert-host");
       if (selector === "[data-chat-watchdog-toast]") {
@@ -181,7 +192,8 @@ function createChat(options = {}) {
     setAssistant(value) { assistant = node(value); assistant.closest = () => null; },
     newUser(value) {
       const user = node(value);
-      user.compareDocumentPosition = () => 4;
+      user.compareDocumentPosition = target =>
+        options.systemDomBeforeUser && target === systemDiv ? 2 : 4;
       users.push(user);
     },
     count(type) { return type === "PLAY_ERROR" ? soundPlayed : sent.filter(x => x === type).length; }
@@ -371,6 +383,62 @@ test('role=status wrapping chat history is never classified as a new system erro
   const app = createChat({statusWrapsHistory: true});
   await app.start();
   app.showStatus(true);
+  app.poll();
+  await app.flush();
+  assert.equal(app.dialogCount(), 0);
+  assert.equal(app.count('PLAY_ERROR'), 0);
+});
+
+
+test('max-length system error in a standalone ordinary div is detected once', async () => {
+  const app = createChat({ systemDomText:
+    'Вы достигли максимальной длины этого обсуждения, но можете продолжить обсуждение, начав новый чат.' });
+  await app.start();
+  app.newUser('Последний запрос');
+  app.poll();
+  await app.flush();
+  assert.equal(app.dialogCount(), 1, 'standalone div must trigger one alert');
+  assert.equal(app.count('PLAY_ERROR'), 1);
+  app.poll();
+  await app.flush();
+  assert.equal(app.dialogCount(), 1, 'rerender must not stack alerts');
+  app.close();
+  app.poll();
+  await app.flush();
+  assert.equal(app.dialogCount(), 0, 'acknowledged error stays dismissed');
+  assert.equal(app.count('PLAY_ERROR'), 1);
+});
+
+test('old system error before newest user message is ignored', async () => {
+  const app = createChat({ systemDomText:
+    'Вы достигли максимальной длины этого обсуждения, но можете продолжить обсуждение, начав новый чат.',
+    systemDomBeforeUser: true });
+  await app.start();
+  app.newUser('Новый запрос уже после старого сообщения');
+  app.poll();
+  await app.flush();
+  assert.equal(app.dialogCount(), 0);
+  assert.equal(app.count('PLAY_ERROR'), 0);
+});
+
+test('an identical system-error phrase quoted inside a user bubble is ignored', async () => {
+  const app = createChat({ systemDomText:
+    'Вы достигли максимальной длины этого обсуждения, но можете продолжить обсуждение, начав новый чат.',
+    systemDomInsideUser: true });
+  await app.start();
+  app.newUser('Проверка');
+  app.poll();
+  await app.flush();
+  assert.equal(app.dialogCount(), 0);
+  assert.equal(app.count('PLAY_ERROR'), 0);
+});
+
+test('a generic div containing old chat turns cannot masquerade as system error', async () => {
+  const app = createChat({ systemDomText:
+    'Вы достигли максимальной длины этого обсуждения, но можете продолжить обсуждение, начав новый чат.',
+    systemDomWrapsHistory: true });
+  await app.start();
+  app.newUser('Проверка');
   app.poll();
   await app.flush();
   assert.equal(app.dialogCount(), 0);

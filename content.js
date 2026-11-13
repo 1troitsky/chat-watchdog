@@ -617,21 +617,43 @@
       const signature = matched + ":" + textOf(target).slice(0, 500);
       matches.push({ node: target, signature, phrase: matched });
     }
-    // ChatGPT sometimes renders transport failures in an ordinary paragraph,
-    // not a role=alert toast. Inspect only standalone known SYSTEM error lines
-    // and exclude user/assistant chat bubbles and the composer.
+    // ChatGPT sometimes renders transport failures as standalone <div>/<span>
+    // blocks (no role=alert, data-testid or <p>). Detect *only* a complete,
+    // known system error in a recent independent block after the latest user
+    // turn. Never scan the text of the conversation's outer containers.
     const currentUser = latestUserTurn().node;
-    for (const node of query('p, [role="paragraph"], [data-testid*="error"]')) {
-      if (!visible(node) || isWatchdogUi(node)) continue;
-      // A system paragraph from a previous answer is no longer current.
-      if (currentUser && !followsUser(node, currentUser)) continue;
-      if (typeof node.closest === "function" && node.closest(
-        '[data-user-message-bubble], [data-message-author-role="user"], ' +
-        '[data-message-author-role="assistant"], [data-turn-key], ' +
-        '[contenteditable], [data-composer-input], form, nav, aside, header, footer, ' +
-        '[role="alert"], [role="status"]')) continue;
-      const phrase = Core.findSystemErrorLine(textOf(node), config.errorWords);
-      if (phrase) matches.push({ node, signature: "system:" + phrase + ":" + textOf(node).slice(0, 500), phrase });
+    if (isChatGPT() && currentUser) {
+      const alreadyMatched = new Set(matches.map(entry => entry.node));
+      // Limit to the newest page elements, avoiding a costly full-history text
+      // scan during the 1.5s polling cycle. Toasts with explicit roles were
+      // already handled above regardless of their page position.
+      for (const node of query('div, span, p, [role="paragraph"]').slice(-900)) {
+        if (alreadyMatched.has(node) || !visible(node) || isWatchdogUi(node) ||
+            !followsUser(node, currentUser)) continue;
+        if (typeof node.closest === "function" && node.closest(
+          '[data-user-message-bubble], [data-message-author-role="user"], ' +
+          '[data-message-author-role="assistant"], [data-turn-key], ' +
+          '[data-content-search-unit-key], [contenteditable], ' +
+          '[data-composer-input], form, nav, aside, header, footer, ' +
+          '[role="dialog"], [role="alert"], [role="status"], ' +
+          'pre, code, button, #chat-watchdog-alert-host')) continue;
+        if (typeof node.querySelector === "function" && node.querySelector(
+          '[data-user-message-bubble], [data-message-author-role], ' +
+          '[data-turn-key], [data-content-search-unit-key], ' +
+          '[contenteditable], [data-composer-input]')) continue;
+        // A container may have hundreds of old messages. Its textContent is
+        // a cheap upper bound before consulting layout-backed innerText.
+        if (String(node.textContent || "").length > 500) continue;
+        const text = textOf(node);
+        const phrase = Core.findSystemErrorLine(text, config.errorWords);
+        if (!phrase) continue;
+        // Prefer the leaf block, not both the leaf and its wrappers. System
+        // messages can use several nested spans to construct one sentence.
+        if (node.children && Array.from(node.children).some(child =>
+          Core.findSystemErrorLine(textOf(child), config.errorWords))) continue;
+        matches.push({ node, signature: "system:" + phrase + ":" + text.slice(0, 500), phrase });
+        alreadyMatched.add(node);
+      }
     }
     const lastReply = latestAssistant(currentSelectors().assistant).node;
     let assistantErrorActive = false;

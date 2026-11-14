@@ -1,5 +1,13 @@
 # Chat Watchdog
 
+## 0.2.28 — shared error phrases and interrupted-connection status fix
+
+- Recognize the ChatGPT recovery status `Соединение прервано. Ожидание полного ответа` as a standalone system error, even when the message contains explanatory text after the known prefix. Do not search arbitrary older conversation text.
+- **Error phrases are now global across all tabs and supported chat sites** within this Chrome extension installation. Edit the list from any tab; `chrome.storage.local` persists it across browser restarts and `storage.onChanged` updates monitors that are already running. The current mode, auto-continue delays, error element overrides, and audio configuration remain per tab.
+- First access migrates saved per-tab phrase lists by merging unique phrases, including custom entries. Existing per-tab settings are not overwritten.
+- A global list applies to all tabs, but it is not cloud-synced across different browsers/devices. This update does not change auto-send, send claims, or the five-attempt limit.
+
+
 ## 0.2.27 — provider-independent system error recognition
 
 - Detect **new system notices across supported and custom chat sites** regardless of HTML tag (`div`, `span`, `p`, `aside`, `section`, `li`) or the presence of `role="alert"`. ARIA live regions, toast elements, and user-defined error selectors are also supported; custom selectors are **additive** rather than replacing the built-ins.

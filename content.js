@@ -5,6 +5,17 @@
 
   const Core = globalThis.ChatWatchdogCore;
   let config = Core.normalize();
+  const GLOBAL_ERRORS_KEY = "watchdog:global:error-words:v1";
+  let sharedErrorWords = null;
+  chrome.storage?.onChanged?.addListener((changes, area) => {
+    const next = area === "local" && changes[GLOBAL_ERRORS_KEY]?.newValue;
+    if (typeof next !== "string") return;
+    sharedErrorWords = next;
+    // Do not invalidate the pending GET_CONFIG reply at startup: that reply
+    // also contains the per-tab ON/OFF state. Keep the live shared list on top.
+    config = Core.normalize({ ...config, errorWords: next, errorWordsVersion: 3 });
+    if (config.enabled) scheduleCheck();
+  });
   let route = location.href;
   let seenInitial = false;
   let lastKey = "";
@@ -1385,7 +1396,8 @@
     const wasEnabled = config.enabled;
     const previousMode = config.mode;
     configRevision++;
-    config = Core.normalize(message.config);
+    config = Core.normalize({ ...message.config,
+      ...(sharedErrorWords !== null ? { errorWords: sharedErrorWords, errorWordsVersion: 3 } : {}) });
     if (previousMode !== "continue" && config.mode === "continue") {
       errorTracker.reset();
       closeDialog();
@@ -1429,7 +1441,8 @@
   const startupConfigRevision = configRevision;
   chrome.runtime.sendMessage({ type: "GET_CONFIG" }).then((saved) => {
     if (configRevision !== startupConfigRevision) return;
-    config = Core.normalize(saved);
+    config = Core.normalize({ ...saved,
+      ...(sharedErrorWords !== null ? { errorWords: sharedErrorWords, errorWordsVersion: 3 } : {}) });
     if (config.enabled) hydrateCooldown();
     check();
   }).catch(() => {});

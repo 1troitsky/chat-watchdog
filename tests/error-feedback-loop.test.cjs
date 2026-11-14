@@ -10,7 +10,7 @@ const contentSource = fs.readFileSync(path.join(__dirname, "..", "content.js"), 
 function createChat(options = {}) {
   const phrase = "!!!У НАС ПРОБЛЕМА!!!";
   let now = 10000, nextTimer = 0;
-  let poll, inspectMutations, keydown;
+  let poll, inspectMutations, keydown, onGlobalStorageChanged;
   let statusVisible = false;
   let systemVisible = !options.systemInitiallyHidden;
   let assistant = null;
@@ -131,7 +131,7 @@ function createChat(options = {}) {
       constructor(fn) { inspectMutations = fn; }
       observe() {}
     },
-    chrome: { runtime: {
+    chrome: { storage: { onChanged: { addListener(fn) { onGlobalStorageChanged = fn; } } }, runtime: {
       onMessage: { addListener() {} },
       sendMessage: async (msg) => {
         sent.push(msg.type);
@@ -201,6 +201,10 @@ function createChat(options = {}) {
   }
   return {
     start, poll, close, advance, flush, flushMutations,
+    setSharedErrors(words) {
+      assert.equal(typeof onGlobalStorageChanged, "function");
+      onGlobalStorageChanged({ "watchdog:global:error-words:v1": { newValue: words } }, "local");
+    },
     dialogCount() { return ui.filter(n => n.id === "chat-watchdog-alert-host").length; },
     addExternalDialog() {
       const host = node();
@@ -590,4 +594,18 @@ test("custom error phrase is detected in an untagged notice on another provider"
   app.poll(); await app.flush();
   assert.equal(app.dialogCount(), 1);
   assert.equal(app.count("PLAY_ERROR"), 1);
+});
+
+
+test("a global error phrase changed in another tab updates an already-running monitor", async () => {
+  const app = createChat({ hostname: "claude.ai", noUserDom: true,
+    systemDomText: "Custom global failure", systemInitiallyHidden: true });
+  await app.start();
+  app.poll();
+  app.setSharedErrors("Custom global failure");
+  app.showSystemError(true);
+  app.poll();
+  await app.flush();
+  assert.equal(app.count("PLAY_ERROR"), 1);
+  assert.equal(app.dialogCount(), 1);
 });

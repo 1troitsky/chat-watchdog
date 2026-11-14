@@ -48,7 +48,21 @@
     "Failed to fetch",
     "Ошибка в потоке сообщений",
     "Unknown error",
-    "Неизвестная ошибка"
+    "Неизвестная ошибка",
+    "Соединение прервано",
+    "Ошибка соединения",
+    "Connection interrupted"
+  ]);
+
+  // Only known transport/system error prefixes may have extra recovery text.
+  // This lets a standalone role=status notice say “Соединение прервано.
+  // Ожидание полного ответа” without matching arbitrary mentions in prose.
+  const SYSTEM_ERROR_CONTINUATIONS = new Set([
+    "Время ожидания доставки сообщения истекло",
+    "Вы достигли максимальной длины этого обсуждения",
+    "Соединение прервано",
+    "Ошибка соединения",
+    "Connection interrupted"
   ]);
 
   function normalize(value) {
@@ -155,9 +169,9 @@
         if (line === needle || line.replace(/[.!?。]+$/, "") === needle.replace(/[.!?。]+$/, ""))
           return true;
         // Two known system errors may append their recovery instructions.
-        return SYSTEM_ERROR_PREFIXES.slice(0, 2).some(prefix =>
-          prefix.toLocaleLowerCase() === needle &&
-          (line.startsWith(needle + " ") || line.startsWith(needle + ".") || line.startsWith(needle + ",")));
+        return SYSTEM_ERROR_CONTINUATIONS.has(phrase) &&
+          (line.startsWith(needle + " ") || line.startsWith(needle + ".") ||
+            line.startsWith(needle + ","));
       }) || null;
   }
 
@@ -165,13 +179,14 @@
     const configured = String(phrases || "").split(/\r?\n/).map(s => s.trim().toLocaleLowerCase());
     const line = String(text || "").trim();
     if (line.length > 500 || line.includes("\n")) return null;
-    return SYSTEM_ERROR_PREFIXES.find((phrase, index) => {
+    return SYSTEM_ERROR_PREFIXES.find(phrase => {
       const needle = phrase.toLocaleLowerCase();
       if (!configured.some(item => item === needle || item.startsWith(needle + "."))) return false;
       const actual = line.toLocaleLowerCase();
       return actual === needle || actual.replace(/[.!?。]+$/, "") === needle ||
-        (index < 2 && (actual.startsWith(needle + ".") ||
-          actual.startsWith(needle + ",") || actual.startsWith(needle + " "))) ||
+        (SYSTEM_ERROR_CONTINUATIONS.has(phrase) &&
+          (actual.startsWith(needle + ".") || actual.startsWith(needle + ",") ||
+            actual.startsWith(needle + " "))) ||
         ((phrase === "Unknown error" || phrase === "Неизвестная ошибка") &&
           actual.startsWith(needle + ":"));
     }) || null;

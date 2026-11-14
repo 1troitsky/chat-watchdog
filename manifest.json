@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Chat Watchdog",
-  "version": "0.2.27",
+  "version": "0.2.28",
   "description": "Per-tab auto-continue, repeated error alarms, and one-time reply completion audio.",
   "minimum_chrome_version": "116",
   "permissions": [

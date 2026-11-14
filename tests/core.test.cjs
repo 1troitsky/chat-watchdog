@@ -301,3 +301,25 @@ test('only trailing error marker counts; an earlier marker inside the answer doe
   assert.equal(Core.findErrorLine('Один абзац.\nОшибка в потоке сообщений.\nРабота продолжена.', markers), null);
   assert.equal(Core.findErrorLine('История\nОшибка в потоке сообщений.\n\n', markers), 'Ошибка в потоке сообщений');
 });
+
+
+test('connection-recovery status from actual ChatGPT DOM is recognized, without scanning prose', () => {
+  const phrases = Core.normalize().errorWords;
+  const notice = 'Соединение прервано. Ожидание полного ответа';
+  assert.equal(Core.findSystemErrorLine(notice, phrases), 'Соединение прервано');
+  assert.equal(Core.findErrorLine(notice, phrases), 'Соединение прервано');
+  assert.equal(Core.findSystemErrorLine('Соединение прервано, переподключение', phrases), 'Соединение прервано');
+  assert.equal(Core.findSystemErrorLine('Connection interrupted. Reconnecting', phrases), 'Connection interrupted');
+  assert.equal(Core.findSystemErrorLine('Ниже приведён пример: ' + notice, phrases), null);
+  assert.equal(Core.findSystemErrorLine('Ожидание полного ответа', phrases), null);
+  assert.equal(Core.findErrorLine(notice + '\n!!!ГОТОВО!!!', phrases), null);
+});
+
+
+test("ChatGPT recovery status is recognized with trailing explanatory text", () => {
+  const words = Core.DEFAULTS.errorWords;
+  const status = "Соединение прервано. Ожидание полного ответа";
+  assert.equal(Core.findSystemErrorLine(status, words), "Соединение прервано");
+  assert.equal(Core.findErrorLine(status, words), "Соединение прервано");
+  assert.equal(Core.findSystemErrorLine("В статье обсуждается соединение прервано", words), null);
+});

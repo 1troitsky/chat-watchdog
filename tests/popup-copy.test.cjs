@@ -11,6 +11,9 @@ async function createPopup({ clipboardError = false, diagnosticsUnavailable = fa
   const handlers = new Map();
   const sent = [];
   const clipboard = [];
+  let globalErrors = "Пользовательская старая ошибка";
+  let globalWrites = 0;
+  let onSharedChanged;
   let diagnosticRequests = 0;
   let logRequests = 0;
   function element(id) {
@@ -66,8 +69,22 @@ async function createPopup({ clipboardError = false, diagnosticsUnavailable = fa
         throw new Error("Unexpected message " + message.type);
       }
     },
-    runtime: { getManifest: () => ({ version: "0.2.10" }), id: "test-extension-id" },
+    runtime: { getManifest: () => ({ version: "0.2.10" }), id: "test-extension-id",
+      sendMessage: async message => {
+        if (message.type === "GET_GLOBAL_ERROR_WORDS")
+          return { ok: true, errorWords: globalErrors };
+        if (message.type === "SET_GLOBAL_ERROR_WORDS") {
+          globalWrites++;
+          globalErrors = message.errorWords;
+          if (onSharedChanged) onSharedChanged({
+            "watchdog:global:error-words:v1": { newValue: globalErrors }
+          }, "local");
+          return { ok: true, errorWords: globalErrors };
+        }
+        throw new Error("unknown runtime message " + message.type);
+      } },
     storage: {
+      onChanged: { addListener(fn) { onSharedChanged = fn; } },
       session: {
         async get(key) {
           if (typeof key === "string") return { [key]: saved[key] };
@@ -103,6 +120,12 @@ async function createPopup({ clipboardError = false, diagnosticsUnavailable = fa
   assert.ok(handlers.has("copyLog:click"), "copy button must be wired");
   return {
     element, sent, clipboard,
+    async change(id, value) {
+      element(id).value = value;
+      await handlers.get(id + ":change")();
+    },
+    globalWords: () => globalErrors,
+    globalWrites: () => globalWrites,
     async clickCopy() { await handlers.get("copyLog:click")(); },
     get diagnosticRequests() { return diagnosticRequests; },
     get logRequests() { return logRequests; }
@@ -147,4 +170,17 @@ test("does not copy a partial report if diagnostic data is unavailable", async (
   assert.equal(popup.clipboard.length, 0);
   assert.match(popup.element("status").textContent, /content script unavailable/);
   assert.equal(popup.element("copyLog").disabled, false);
+});
+
+
+test("editing the error list stores one shared value, not a tab-specific override", async () => {
+  const popup = await createPopup();
+  assert.equal(popup.element("errorWords").value, "Пользовательская старая ошибка");
+  await popup.change("errorWords", "Соединение прервано\nCustom provider alert");
+  assert.equal(popup.globalWords(), "Соединение прервано\nCustom provider alert");
+  assert.equal(popup.globalWrites(), 1);
+  assert.match(popup.element("status").textContent, /для всех вкладок/);
+  await popup.change("delaySeconds", "21");
+  assert.equal(popup.globalWrites(), 1, "per-tab settings must never overwrite shared errors");
+  assert.equal(popup.globalWords(), "Соединение прервано\nCustom provider alert");
 });

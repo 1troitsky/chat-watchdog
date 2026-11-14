@@ -17,7 +17,7 @@
     $("enabled").disabled = true;
     return;
   }
-  $("site").textContent = origin + " · только эта вкладка";
+  $("site").textContent = origin + " · настройки вкладки, общий список ошибок";
   const storageKey = "tab:" + tab.id;
   const stored = await chrome.storage.session.get(storageKey);
   let config = ChatWatchdogCore.normalize(stored[storageKey]);
@@ -26,6 +26,23 @@
     config.audioName = "";
   }
   config.origin = origin;
+  let globalWordsReply = null;
+  try {
+    globalWordsReply = await chrome.runtime.sendMessage({ type: "GET_GLOBAL_ERROR_WORDS" });
+  } catch (error) {
+    status("Общий список ошибок недоступен: " + String(error.message || error));
+  }
+  if (globalWordsReply?.ok && typeof globalWordsReply.errorWords === "string")
+    config.errorWords = globalWordsReply.errorWords;
+
+  // Two simultaneously open popups must also show a shared-list update.
+  chrome.storage.onChanged?.addListener((changes, area) => {
+    if (area !== "local") return;
+    const update = changes["watchdog:global:error-words:v1"];
+    if (!update || typeof update.newValue !== "string") return;
+    config.errorWords = update.newValue;
+    $("errorWords").value = update.newValue;
+  });
 
   const render = () => {
     $("enabled").checked = config.enabled;
@@ -50,15 +67,32 @@
     }
   }
 
-  async function save() {
+  async function save(globalErrorsChanged = false) {
     config = ChatWatchdogCore.normalize(config);
+    if (globalErrorsChanged) {
+      let saved;
+      try {
+        saved = await chrome.runtime.sendMessage({
+          type: "SET_GLOBAL_ERROR_WORDS", errorWords: config.errorWords
+        });
+      } catch (error) {
+        status("Не удалось сохранить общий список ошибок: " + String(error.message || error));
+        return;
+      }
+      if (!saved?.ok) {
+        status("Не удалось сохранить общий список ошибок: " + (saved?.reason || "нет ответа"));
+        return;
+      }
+      config.errorWords = saved.errorWords;
+    }
     await chrome.storage.session.set({ [storageKey]: config });
     try {
       await chrome.tabs.sendMessage(tab.id, { type: "WATCHDOG_CONFIG", config });
     } catch {
       // The content script is not loaded when the switch is OFF.
     }
-    status(markerError() || "Сохранено для этой вкладки");
+    status(markerError() || (globalErrorsChanged ?
+      "Список ошибок сохранён для всех вкладок" : "Сохранено для этой вкладки"));
   }
 
   for (const field of fields) {
@@ -68,7 +102,7 @@
         $("autoSendSettings").hidden = config.mode === "errors";
         $("errorSettings").hidden = config.mode === "continue";
       }
-      await save();
+      await save(field === "errorWords");
     });
   }
 

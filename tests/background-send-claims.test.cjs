@@ -6,7 +6,7 @@ const vm = require("node:vm");
 
 const background = fs.readFileSync(path.join(__dirname, "..", "background.js"), "utf8");
 
-function createWorker(saved = new Map(), clock = { now: 1000000 }, alarmState = { count: 0, current: null }) {
+function createWorker(saved = new Map(), clock = { now: 1000000 }, alarmState = { count: 0, current: null }, localSaved = new Map()) {
   let onMessage;
   let onUpdated;
   let onRemoved;
@@ -48,7 +48,15 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }, alarmState = 
         return { ok: true, enabled: true };
       }
     },
-    storage: { session },
+    storage: { session, local: {
+      async get(keys) {
+        const requested = keys == null ? [...localSaved.keys()] :
+          (typeof keys === "string" ? [keys] : keys);
+        return Object.fromEntries(requested.filter(x => localSaved.has(x))
+          .map(x => [x, localSaved.get(x)]));
+      },
+      async set(entries) { for (const [k, v] of Object.entries(entries)) localSaved.set(k, v); }
+    } },
     alarms: {
       onAlarm: { addListener(fn) { onAlarm = fn; } },
       get: async () => alarmState.current,
@@ -116,7 +124,16 @@ function createWorker(saved = new Map(), clock = { now: 1000000 }, alarmState = 
       enabled: true, mode: "auto", origin: "https://chatgpt.com", ...overrides
     });
   }
-  return { claim, release, claimErrorDialog, releaseErrorDialog, completion, error, state, configure, saved, clock, playback,
+  async function popupMessage(message) {
+    return new Promise(resolve => assert.equal(onMessage(message,
+      { id: "watchdog-test" }, resolve), true));
+  }
+  async function getConfig(tabId) {
+    return new Promise(resolve => assert.equal(onMessage({ type: "GET_CONFIG" },
+      { tab: { id: tabId, url: "https://chatgpt.com/c/" + tabId }, id: "watchdog-test" }, resolve), true));
+  }
+  return { claim, release, claimErrorDialog, releaseErrorDialog, completion, error, state, configure,
+    popupMessage, getConfig, localSaved, saved, clock, playback,
     setHealthTabs(value, isReachable) { tabs = value; reachable = isReachable; },
     async runHealthAlarm() { onAlarm({ name: "chat-watchdog-health" });
       for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve)); },
@@ -570,4 +587,52 @@ test("pre-0.2.24 weak userTurns do not poison upgraded extension", async () => {
   assert.equal(claim.ok, true);
   assert.equal((await app.claim("chat|assistant:previous", 7,
     "https://chatgpt.com/c/a", 1, "user:actual-new-id", true, true)).reason, "duplicate");
+});
+
+
+test("shared errors migrate ALL tab-specific phrases, without merging tab modes", async () => {
+  const session = new Map();
+  const persistent = new Map();
+  const app = createWorker(session, undefined, undefined, persistent);
+  session.set("tab:7", { enabled: true, mode: "auto", origin: "https://chatgpt.com",
+    errorWords: "Failed to fetch\nМоя ошибка" });
+  session.set("tab:8", { enabled: false, mode: "errors", origin: "https://claude.ai",
+    errorWords: "Failed to fetch\nCustom alert" });
+  const result = await app.popupMessage({ type: "GET_GLOBAL_ERROR_WORDS" });
+  assert.equal(result.ok, true);
+  assert.equal(result.errorWords, "Failed to fetch\nМоя ошибка\nCustom alert");
+  assert.equal(persistent.get("watchdog:global:error-words:v1"), result.errorWords);
+  assert.equal((await app.getConfig(7)).mode, "auto");
+  assert.equal((await app.getConfig(8)).mode, "errors");
+  assert.equal((await app.getConfig(7)).errorWords, result.errorWords);
+  assert.equal((await app.getConfig(8)).errorWords, result.errorWords);
+});
+
+test("shared errors update every tab immediately and persist across worker restarts", async () => {
+  const session = new Map();
+  const local = new Map();
+  const worker = createWorker(session, undefined, undefined, local);
+  worker.configure(7, { errorWords: "old A", delaySeconds: 15 });
+  worker.configure(8, { errorWords: "old B", delaySeconds: 90 });
+  const saved = await worker.popupMessage({ type: "SET_GLOBAL_ERROR_WORDS",
+    errorWords: "New custom failure\nСоединение прервано" });
+  assert.equal(saved.ok, true);
+  assert.equal((await worker.getConfig(7)).errorWords, saved.errorWords);
+  assert.equal((await worker.getConfig(8)).errorWords, saved.errorWords);
+  assert.equal((await worker.getConfig(7)).delaySeconds, 15);
+  assert.equal((await worker.getConfig(8)).delaySeconds, 90);
+  const afterRestart = createWorker(session, undefined, undefined, local);
+  assert.equal((await afterRestart.popupMessage({ type: "GET_GLOBAL_ERROR_WORDS" })).errorWords,
+    saved.errorWords);
+  assert.equal((await afterRestart.getConfig(8)).errorWords, saved.errorWords);
+  assert.equal(session.get("tab:8").errorWords, "old B", "tab config must remain separate");
+});
+
+test("global errors cannot be overwritten by a webpage, nor by an invalid large payload", async () => {
+  const app = createWorker();
+  assert.equal((await app.popupMessage({ type: "SET_GLOBAL_ERROR_WORDS",
+    errorWords: "Safe" })).ok, true);
+  assert.equal((await app.popupMessage({ type: "SET_GLOBAL_ERROR_WORDS",
+    errorWords: "a".repeat(32769) })).ok, false);
+  assert.equal((await app.popupMessage({ type: "GET_GLOBAL_ERROR_WORDS" })).errorWords, "Safe");
 });

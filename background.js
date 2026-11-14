@@ -3,6 +3,60 @@
 importScripts("audio-db.js");
 
 const key = (tabId) => "tab:" + tabId;
+// The error phrase list is persistent and shared by every site and tab.
+// All other Watchdog settings remain tab-scoped in storage.session.
+const GLOBAL_ERRORS_KEY = "watchdog:global:error-words:v1";
+let globalErrorsQueue = Promise.resolve();
+function withGlobalErrorsLock(action) {
+  const work = globalErrorsQueue.catch(() => {}).then(action);
+  globalErrorsQueue = work;
+  return work;
+}
+async function readGlobalErrorWords() {
+  if (!chrome.storage?.local) return null;
+  return withGlobalErrorsLock(async () => {
+    const saved = (await chrome.storage.local.get(GLOBAL_ERRORS_KEY))[GLOBAL_ERRORS_KEY];
+    if (typeof saved === "string") return saved;
+    // One-time migration: keep ALL custom error phrases from open tabs, not
+    // just the tab that first opens the popup after the update.
+    const sessions = await chrome.storage.session.get(null);
+    const lists = Object.entries(sessions)
+      .filter(([name, value]) => /^tab:\d+$/.test(name) &&
+        typeof value?.errorWords === "string")
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([, value]) => value.errorWords);
+    if (!lists.length) return null; // First install: Core defaults remain active.
+    const lines = [];
+    const seen = new Set();
+    for (const list of lists) {
+      for (const value of list.split(/\r?\n/)) {
+        const line = value.trim();
+        const unique = line.toLocaleLowerCase();
+        if (line && !seen.has(unique)) { seen.add(unique); lines.push(line); }
+      }
+    }
+    const merged = lines.join("\n");
+    await chrome.storage.local.set({ [GLOBAL_ERRORS_KEY]: merged });
+    return merged;
+  });
+}
+async function saveGlobalErrorWords(words) {
+  if (typeof words !== "string" || words.length > 32768 ||
+      !chrome.storage?.local) return { ok: false, reason: "invalid-global-errors" };
+  return withGlobalErrorsLock(async () => {
+    const normalized = words.replace(/\r\n/g, "\n");
+    await chrome.storage.local.set({ [GLOBAL_ERRORS_KEY]: normalized });
+    return { ok: true, errorWords: normalized };
+  });
+}
+async function effectiveTabConfig(tabId) {
+  const [items, globalWords] = await Promise.all([
+    chrome.storage.session.get(key(tabId)), readGlobalErrorWords()
+  ]);
+  const config = items[key(tabId)] || null;
+  return config && typeof globalWords === "string" ?
+    { ...config, errorWords: globalWords, errorWordsVersion: 3 } : config;
+}
 const audioEpochs = new Map();
 const completionQueues = new Map();
 const sendClaimQueues = new Map();
@@ -305,7 +359,8 @@ async function scanEnabledTabs() {
         const reply = await chrome.tabs.sendMessage(tab.id, { type: "WATCHDOG_HEALTH" });
         if (reply?.ok && reply.enabled) continue;
         if (reply?.ok) {
-          await chrome.tabs.sendMessage(tab.id, { type: "WATCHDOG_CONFIG", config: saved });
+          await chrome.tabs.sendMessage(tab.id, { type: "WATCHDOG_CONFIG",
+            config: await effectiveTabConfig(tab.id) || saved });
           continue;
         }
       } catch { /* No responding content script: try injecting it. */ }
@@ -313,7 +368,8 @@ async function scanEnabledTabs() {
         await chrome.scripting.executeScript({
           target: { tabId: tab.id }, files: ["core.js", "content.js"]
         });
-        await chrome.tabs.sendMessage(tab.id, { type: "WATCHDOG_CONFIG", config: saved });
+        await chrome.tabs.sendMessage(tab.id, { type: "WATCHDOG_CONFIG",
+          config: await effectiveTabConfig(tab.id) || saved });
       } catch (error) {
         console.warn("Chat Watchdog recovery:", error);
       }
@@ -344,6 +400,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       Number.isInteger(message.tabId)) {
     stopTabAudio(message.tabId).catch(console.warn);
     return false;
+  }
+  // Popup messages have no sender.tab. Keep global configuration independent
+  // of the active tab, and serialize writes with the first-run migration.
+  if (message.type === "GET_GLOBAL_ERROR_WORDS" && sender.id === chrome.runtime.id) {
+    readGlobalErrorWords().then(errorWords => sendResponse({ ok: true, errorWords }))
+      .catch(error => sendResponse({ ok: false, reason: String(error) }));
+    return true;
+  }
+  if (message.type === "SET_GLOBAL_ERROR_WORDS" && sender.id === chrome.runtime.id &&
+      !sender.tab) {
+    saveGlobalErrorWords(message.errorWords).then(sendResponse)
+      .catch(error => sendResponse({ ok: false, reason: String(error) }));
+    return true;
   }
   if (!sender.tab || !Number.isInteger(sender.tab.id)) return false;
   const tabId = sender.tab.id;
@@ -400,9 +469,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   if (message.type === "GET_CONFIG") {
-    chrome.storage.session.get(key(tabId))
-      .then((items) => sendResponse(items[key(tabId)] || null))
-      .catch(() => sendResponse(null));
+    effectiveTabConfig(tabId).then(sendResponse).catch(() => sendResponse(null));
     return true;
   }
   if (message.type === "PLAY_COMPLETION") {
